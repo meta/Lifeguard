@@ -284,6 +284,19 @@ fn string_literal_module(expr: &Expr) -> Option<ModuleName> {
     (!key.is_empty()).then(|| ModuleName::from_str(key))
 }
 
+/// `patch.dict("sys.modules", ...)` looks the name up and patches the table itself.
+fn patches_sys_modules_by_name(func: &Expr, args: Option<&Arguments>) -> bool {
+    let is_patch_dict = func.full_name().is_some_and(|name| {
+        let name = name.as_str();
+        name == "patch.dict" || name.ends_with(".patch.dict")
+    });
+    is_patch_dict
+        && args
+            .and_then(|a| a.args.first())
+            .and_then(string_literal_module)
+            .is_some_and(|target| target.as_str() == "sys.modules")
+}
+
 /// The module a `sys.modules["a.b"]` read names. Writes are excluded: they
 /// register a module under a key rather than looking one up.
 fn sys_modules_key(e: &ExprSubscript) -> Option<ModuleName> {
@@ -631,6 +644,9 @@ impl<'a> SourceAnalyzer<'a> {
 
     /// Classify a single call argument as imported/forwarded/neither
     fn classify_call_arg(&self, arg: &Expr, output: &mut ModuleEffects) -> ArgClass {
+        if self.is_sys_modules_access(arg) {
+            self.add_sys_modules_access(arg.range(), output);
+        }
         let Some(res) = self.info.resolve(&self.cursor, arg) else {
             return ArgClass::Other;
         };
@@ -798,6 +814,9 @@ impl<'a> SourceAnalyzer<'a> {
         let mut call_data = CallData::empty();
         if let Some(args) = args {
             call_data = self.check_call_args(args, output);
+        }
+        if patches_sys_modules_by_name(func, args) {
+            self.add_sys_modules_access(range, output);
         }
 
         if let Expr::Attribute(ExprAttribute { value, .. }) = func {

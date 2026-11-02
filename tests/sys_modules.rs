@@ -340,6 +340,69 @@ mod tests {
         );
     }
 
+    /// A deferred import first used inside the patched block resolves against the
+    /// patched table.
+    #[test]
+    fn test_passing_sys_modules_to_a_call_stays_eager() {
+        let reader = r#"
+            import sys
+            from unittest import mock
+
+            def run():
+                with mock.patch.dict(sys.modules, {"loud": None}, clear=True):
+                    return None
+        "#;
+        let result = run_lifeguard_analysis(&vec![("reader", reader)]);
+        assert!(
+            loads_imports_eagerly(&result, "reader"),
+            "the callee can rewrite the table this module's deferred imports resolve against"
+        );
+    }
+
+    #[test]
+    fn test_patching_sys_modules_by_name_stays_eager() {
+        let reader = r#"
+            from unittest import mock
+
+            def run():
+                with mock.patch.dict("sys.modules", {"loud": None}):
+                    return None
+        "#;
+        let result = run_lifeguard_analysis(&vec![("reader", reader)]);
+        assert!(
+            loads_imports_eagerly(&result, "reader"),
+            "`patch.dict` looks the name up and patches `sys.modules` itself"
+        );
+    }
+
+    #[test]
+    fn test_patching_another_dict_stays_lazy() {
+        let reader = r#"
+            import os
+            from unittest import mock
+
+            def run():
+                with mock.patch.dict(os.environ, {"X": "1"}):
+                    pass
+                with mock.patch.dict("os.environ", {"X": "1"}):
+                    pass
+        "#;
+        let result = run_lifeguard_analysis(&vec![("reader", reader)]);
+        assert!(
+            !loads_imports_eagerly(&result, "reader"),
+            "patching any other dict leaves the import table alone"
+        );
+    }
+
+    #[test]
+    fn test_module_scope_call_argument_is_an_access() {
+        let code = r#"
+            import sys
+            snapshot = dict(sys.modules) # E: sys-modules-access
+        "#;
+        check(code);
+    }
+
     #[test]
     fn test_del_call_still_triggers_eager() {
         let code = r#"
