@@ -28,17 +28,16 @@ pub(crate) fn enclosing_module<'a>(
 /// `ModuleName::from_str` interns, so probing with it pays the global interner for
 /// every ancestor tried, and leaves a permanent entry behind for each one that is
 /// not a module. A caller splitting many names against one module set should build
-/// a `&str` view of that set once and probe it instead; only the module it settles
-/// on is interned.
+/// a `&str -> ModuleName` view of that set once and probe it instead; nothing is interned.
 pub(crate) fn enclosing_module_str<'a>(
     name: &'a str,
-    is_module: impl Fn(&str) -> bool,
+    module_of: impl Fn(&str) -> Option<ModuleName>,
 ) -> Option<(ModuleName, &'a str)> {
     let mut end = name.len();
     while let Some(pos) = name[..end].rfind('.') {
         end = pos;
-        if is_module(&name[..pos]) {
-            return Some((ModuleName::from_str(&name[..pos]), &name[pos + 1..]));
+        if let Some(module) = module_of(&name[..pos]) {
+            return Some((module, &name[pos + 1..]));
         }
     }
     None

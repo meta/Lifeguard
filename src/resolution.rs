@@ -588,11 +588,12 @@ fn promote_fixpoint(
         }),
         NameSearch::ProbeStr => {
             // Built once for the whole split, not per callee.
-            let module_strs: AHashSet<&str> = module_names.iter().map(|m| m.as_str()).collect();
+            let module_strs: AHashMap<&str, ModuleName> =
+                module_names.iter().map(|m| (m.as_str(), *m)).collect();
             collect_promotion_candidates(module_names, function_safety, |name| {
                 resolve_callee(
                     name,
-                    enclosing_module_str(name, |m| module_strs.contains(m)),
+                    enclosing_module_str(name, |m| module_strs.get(m).copied()),
                 )
             })
         }

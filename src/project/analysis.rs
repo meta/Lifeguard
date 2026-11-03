@@ -19,6 +19,7 @@ use crate::analyzer;
 use crate::analyzer::AnalyzedModule;
 use crate::config::AnalysisConfig;
 use crate::exports::Exports;
+use crate::hasher::AHashMap;
 use crate::hasher::AHashSet;
 use crate::imports::ImportGraph;
 use crate::module_parser::ParsedModule;
@@ -205,13 +206,14 @@ impl ProjectInfo {
         let (safety_map, function_safety) = state.into_parts();
         if mode == ExecutionMode::Incremental {
             let modules: Vec<ModuleName> = safety_map.iter().map(|entry| *entry.key()).collect();
-            let module_strs: AHashSet<&str> = modules.iter().map(|m| m.as_str()).collect();
+            let module_strs: AHashMap<&str, ModuleName> =
+                modules.iter().map(|m| (m.as_str(), *m)).collect();
 
             // Consumed rather than iterated by reference: every verdict is moved
             // into the module that owns it, so none of them is cloned.
             function_safety.into_par_iter().for_each(|(fqn, mut info)| {
                 let Some((module, local_name)) =
-                    enclosing_module_str(fqn.as_str(), |p| module_strs.contains(p))
+                    enclosing_module_str(fqn.as_str(), |p| module_strs.get(p).copied())
                 else {
                     return;
                 };
