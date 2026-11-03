@@ -322,7 +322,7 @@ fn is_resolved_error_verified_safe(
     error: &SafetyError,
     whole_program: &SafetyResolver,
     scoped: Option<&SafetyResolver>,
-    promoted: &AHashSet<(ModuleName, String)>,
+    promotion: &PromotionScope,
 ) -> bool {
     // A constructor call clears on the class's map-phase-recorded callees, which
     // are whole-program facts. Scoping that check to a module's newly resolved
@@ -334,20 +334,61 @@ fn is_resolved_error_verified_safe(
     if error.kind == ErrorKind::UnsafeDecoratorCall || !qualified {
         return whole_program.is_error_verified_safe(error);
     }
-    // Own-module callees verify against merged verdicts, unless promoted:
-    // promotion evidence is cross-module, so it stays scoped like any other.
+    // Own-module callees verify against merged verdicts. A promoted one only
+    // does when its promotion rests on this module's newly resolved imports.
     if matches!(
         error.kind,
         ErrorKind::UnsafeFunctionCall | ErrorKind::UnsafeMethodCall
-    ) && whole_program
-        .split_at_module(error.metadata.as_str().trim_end_matches("()"))
-        .is_some_and(|(module, local)| {
-            module == caller && !promoted.contains(&(module, local.to_owned()))
-        })
+    ) && let Some((module, local)) =
+        whole_program.split_at_module(error.metadata.as_str().trim_end_matches("()"))
+        && module == caller
+        && (!promotion.promoted.contains(&(module, local.to_owned()))
+            || promotion.rests_on_resolved(caller, local, whole_program))
     {
         return whole_program.is_error_verified_safe(error);
     }
     scoped.is_some_and(|scoped| scoped.is_error_verified_safe(error))
+}
+
+/// What a promoted own-module callee may clear on: the reduce's promotions, and
+/// the modules one caller newly resolved.
+struct PromotionScope<'a> {
+    promoted: &'a AHashSet<(ModuleName, String)>,
+    func_safety_by_module: &'a AHashMap<ModuleName, AHashMap<String, FunctionSafetyInfo>>,
+    resolved: Option<&'a AHashSet<ModuleName>>,
+}
+
+impl PromotionScope<'_> {
+    /// Whether every callee outside `caller` reached through `local`'s own-module
+    /// missing-dep chain lies in a module `caller` newly resolved.
+    fn rests_on_resolved(
+        &self,
+        caller: ModuleName,
+        local: &str,
+        resolver: &SafetyResolver,
+    ) -> bool {
+        let Some(functions) = self.func_safety_by_module.get(&caller) else {
+            return false;
+        };
+        let mut seen = AHashSet::new();
+        let mut stack = vec![local];
+        while let Some(name) = stack.pop() {
+            if !seen.insert(name) {
+                continue;
+            }
+            let Some(info) = functions.get(name) else {
+                return false;
+            };
+            for callee in &info.missing_dep_callees {
+                match resolver.split_at_module(callee.as_str()) {
+                    Some((module, own)) if module == caller => stack.push(own),
+                    Some((module, _)) if self.resolved.is_some_and(|r| r.contains(&module)) => {}
+                    _ => return false,
+                }
+            }
+        }
+        true
+    }
 }
 
 impl LibraryCache {
@@ -382,7 +423,8 @@ impl LibraryCache {
     ///
     /// Qualified callees use the owning module's newly resolved imports,
     /// except bound calls to the caller's own module, which use the merged
-    /// verdicts unless the callee was promoted. Unqualified callees use the
+    /// verdicts unless the callee's promotion leaned on a module the caller did
+    /// not newly resolve. Unqualified callees use the
     /// whole-program safe-name index, and an `UnsafeDecoratorCall` uses the
     /// whole merged program's static verdicts.
     /// A qualified `UnknownDecoratorCall` is not in that last group: it names a
@@ -405,10 +447,13 @@ impl LibraryCache {
             let CachedSafety::Ok(ref mut safety) = module.safety else {
                 return;
             };
-            let scoped = ctx
-                .resolved_by_module
-                .get(&caller)
-                .map(|resolved| ctx.resolver(resolved, &outcome.globally_safe));
+            let resolved = ctx.resolved_by_module.get(&caller);
+            let scoped = resolved.map(|resolved| ctx.resolver(resolved, &outcome.globally_safe));
+            let promotion = PromotionScope {
+                promoted: &promoted,
+                func_safety_by_module: ctx.func_safety_by_module,
+                resolved,
+            };
 
             retain_unverified_errors(safety, |error| {
                 is_resolved_error_verified_safe(
@@ -416,7 +461,7 @@ impl LibraryCache {
                     error,
                     &whole_program,
                     scoped.as_ref(),
-                    &promoted,
+                    &promotion,
                 )
             });
         });
@@ -1104,6 +1149,53 @@ mod tests {
         assert!(
             !cache.modules.iter().all(CachedModule::is_safe),
             "unbound own-module error should stay without new imports"
+        );
+    }
+
+    #[test]
+    fn promoted_own_module_callee_clears_when_its_chain_stays_in_the_module() {
+        // `run` was only blocked on `helper`, a function of the same module that
+        // is safe: no other module's verdict was evidence, so nothing need resolve.
+        let module_m = ModuleName::from_str("test.module_m");
+        let caller = CachedModule {
+            safety: CachedSafety::Ok(CachedModuleSafety {
+                errors: vec![SafetyError::new(
+                    ErrorKind::UnsafeFunctionCall,
+                    format!("{}.run()", module_m.as_str()),
+                    TextRange::default(),
+                )],
+                ..Default::default()
+            }),
+            function_safety: [
+                (
+                    "run".to_owned(),
+                    FunctionSafetyInfo::unsafe_missing_dep(ModuleName::from_str(
+                        "test.module_m.helper",
+                    )),
+                ),
+                (
+                    "helper".to_owned(),
+                    FunctionSafetyInfo::new(FunctionSafety::Safe),
+                ),
+            ]
+            .into_iter()
+            .collect(),
+            ..CachedModule::empty(module_m)
+        };
+        let mut cache = LibraryCache {
+            modules: vec![caller],
+            exports: CachedExports {
+                re_exports: Vec::new(),
+                return_types: Vec::new(),
+            },
+            ..Default::default()
+        };
+
+        cache.resolve_cross_library_errors(MergedClassFacts::default());
+
+        assert!(
+            cache.modules.iter().all(CachedModule::is_safe),
+            "a promotion resting only on the module's own safe functions should clear"
         );
     }
 
