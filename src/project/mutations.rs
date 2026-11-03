@@ -311,65 +311,52 @@ impl ProjectInfo {
         })
     }
 
+    /// `func`'s (transitively) mutated parameters, each classified against its own
+    /// signature. A signature that can't be found is `Unresolved`, never keyword-only.
+    fn classified_mutated_params<'a>(
+        &'a self,
+        func: &ModuleName,
+    ) -> Option<impl Iterator<Item = (&'a ModuleName, ParamPosition)> + 'a> {
+        let params = self.mutated_params.get(func)?;
+        let module = self.functions.get(func).unwrap_or(func);
+        let defs = self.analysis_map.get(module).map(|m| &m.definitions);
+        let func = *func;
+        Some(params.iter().map(move |param| {
+            let position = defs.map_or(ParamPosition::Unresolved, |d| {
+                d.classify_param(&func, param.as_str())
+            });
+            (param, position)
+        }))
+    }
+
     /// Resolve a function's mutated parameters to positional indices using the
     /// callee's definition table.
     pub(super) fn resolve_cached_mutated_params_for(
         &self,
         func: &ModuleName,
     ) -> Option<Vec<MutatedParam>> {
-        let params = self.mutated_params.get(func)?;
-        let callee_module = self.functions.get(func).copied().unwrap_or(*func);
-        let defs = self
-            .analysis_map
-            .get(&callee_module)
-            .map(|m| &m.definitions);
-
-        let mut resolved = Vec::with_capacity(params.len());
-        for param in params {
-            // Distinguish an unresolvable signature (no `defs`) from a resolved
-            // keyword-only parameter, so the reduce never treats an unresolved
-            // positional parameter as keyword-only (which would miss a positional
-            // match and be a false-safe).
-            let position = match defs {
-                Some(d) => d.classify_param(func, param.as_str()),
-                None => ParamPosition::Unresolved,
-            };
-            resolved.push(MutatedParam {
-                name: *param,
-                position,
-            });
-        }
-        Some(resolved)
+        self.classified_mutated_params(func).map(|params| {
+            params
+                .map(|(&name, position)| MutatedParam { name, position })
+                .collect()
+        })
     }
 
     /// Whether `call_data` passes an imported variable into a (transitively)
     /// mutated parameter of `callee`, with explicit args starting at `arg_offset`.
-    /// (Helper function for `call_mutates_imported_arg()` below.)
     fn callee_mutates_imported_arg(
         &self,
         call_data: &CallData,
         callee: &ModuleName,
         arg_offset: usize,
     ) -> bool {
-        let Some(mutated) = self.mutated_params.get(callee) else {
-            return false;
-        };
-        let callee_module = self.functions.get(callee).copied().unwrap_or(*callee);
-        let defs = self
-            .analysis_map
-            .get(&callee_module)
-            .map(|m| &m.definitions);
-        call_data.imported_args().hits_any_param(
-            mutated.iter().map(|param| {
-                let name = param.as_str();
-                let position = match defs {
-                    Some(d) => d.classify_param(callee, name),
-                    None => ParamPosition::Unresolved,
-                };
-                (name, position)
-            }),
-            arg_offset,
-        )
+        self.classified_mutated_params(callee)
+            .is_some_and(|params| {
+                call_data.imported_args().hits_any_param(
+                    params.map(|(param, position)| (param.as_str(), position)),
+                    arg_offset,
+                )
+            })
     }
 
     /// Whether `call_effect` passes an imported variable to a parameter the callee
