@@ -12,7 +12,6 @@
 //! records a library does not own are dropped. Nothing here resolves anything:
 //! a merge answers "what do the caches jointly say", not "is it safe".
 
-use std::collections::HashMap;
 use std::collections::hash_map::Entry;
 use std::hash::Hash;
 
@@ -395,7 +394,7 @@ pub(super) fn retain_unverified_errors(
 /// result is independent of dep-cache fold order — a bare `collect()` would
 /// instead keep whichever tuple landed last.
 pub(super) fn fold_fqn_lists(
-    merged: &mut HashMap<ModuleName, Vec<ModuleName>>,
+    merged: &mut AHashMap<ModuleName, Vec<ModuleName>>,
     entries: Vec<(ModuleName, Vec<ModuleName>)>,
 ) {
     merged.reserve(entries.len());
@@ -412,7 +411,7 @@ pub(super) fn fold_fqn_lists(
 /// Fold one library's constructor-callee records into a lookup map, unioning any
 /// class recorded by more than one library.
 pub(super) fn fold_constructor_callees(
-    merged: &mut HashMap<ModuleName, ConstructorCallees>,
+    merged: &mut AHashMap<ModuleName, ConstructorCallees>,
     entries: Vec<(ModuleName, ConstructorCallees)>,
 ) {
     for (class_fqn, recorded) in entries {
@@ -438,8 +437,8 @@ pub(super) fn fold_constructor_callees(
 /// [`merge_class_bases`] does.
 pub(super) fn merge_class_properties(
     entries: Vec<(ModuleName, Vec<String>)>,
-) -> HashMap<ModuleName, AHashSet<String>> {
-    let mut merged: HashMap<ModuleName, AHashSet<String>> = HashMap::with_capacity(entries.len());
+) -> AHashMap<ModuleName, AHashSet<String>> {
+    let mut merged: AHashMap<ModuleName, AHashSet<String>> = AHashMap::with_capacity(entries.len());
     for (class_fqn, properties) in entries {
         merged.entry(class_fqn).or_default().extend(properties);
     }
@@ -458,7 +457,7 @@ mod tests {
         let base_b = ModuleName::from_str("pkg.mod.B");
 
         // Two libraries contribute `pkg.mod.C`: a duplicate base and a new one.
-        let mut merged = HashMap::new();
+        let mut merged = AHashMap::new();
         fold_fqn_lists(&mut merged, vec![(c, vec![base_a])]);
         fold_fqn_lists(&mut merged, vec![(c, vec![base_a, base_b])]);
 

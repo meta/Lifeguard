@@ -5,8 +5,6 @@
  * LICENSE file in the root directory of this source tree.
  */
 
-use std::collections::HashMap;
-
 use pyrefly_python::module_name::ModuleName;
 use rayon::prelude::*;
 use ruff_text_size::TextRange;
@@ -75,7 +73,7 @@ impl WalkedBases {
         &'a self,
         module: ModuleName,
         candidates: &'a [SubclassCandidate],
-        class_bases: &'a HashMap<ModuleName, Vec<ModuleName>>,
+        class_bases: &'a AHashMap<ModuleName, Vec<ModuleName>>,
         imports: impl Fn(&ModuleName, &ModuleName) -> bool + 'a,
     ) -> impl Iterator<Item = SafetyError> + 'a {
         let walked_elsewhere = move |base: &ModuleName| {
@@ -114,7 +112,7 @@ fn walked_base(error: &SafetyError) -> Option<ModuleName> {
 }
 
 fn inherits_from(
-    class_bases: &HashMap<ModuleName, Vec<ModuleName>>,
+    class_bases: &AHashMap<ModuleName, Vec<ModuleName>>,
     class: &ModuleName,
     is_target: impl Fn(&ModuleName) -> bool,
 ) -> bool {

@@ -7,8 +7,6 @@
 
 //! Immutable project facts and enclosing-module name lookup.
 
-use std::collections::HashMap;
-
 use pyrefly_python::module_name::ModuleName;
 
 use crate::class::ClassTable;
@@ -40,7 +38,7 @@ pub(super) struct ProjectInfo {
     pub(super) analysis_map: AnalysisMap,
     pub(super) effect_table: EffectTable,
     pub(super) classes: ClassTable,
-    pub(super) class_bases: HashMap<ModuleName, Vec<ModuleName>>,
+    pub(super) class_bases: AHashMap<ModuleName, Vec<ModuleName>>,
     // Mappings of functions to the containing module
     pub(super) functions: AHashMap<ModuleName, ModuleName>,
     // Re-exported name -> the function or class it resolves to, or the name itself

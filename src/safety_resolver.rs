@@ -19,8 +19,6 @@
 //! an own verdict fall through to a base clears an override on its parent -- so
 //! they live together rather than beside the cache schema.
 
-use std::collections::HashMap;
-
 use dashmap::DashMap;
 use pyrefly_python::module_name::ModuleName;
 
@@ -101,10 +99,10 @@ pub(crate) struct SafetyResolver<'a> {
     decorator_verdicts: Option<&'a DecoratorVerdictMap<'a>>,
     /// Class FQN -> base FQNs, enabling MRO resolution of inherited
     /// `Class.method` calls when there is no exact method verdict.
-    class_bases: Option<&'a HashMap<ModuleName, Vec<ModuleName>>>,
+    class_bases: Option<&'a AHashMap<ModuleName, Vec<ModuleName>>>,
     /// Map-phase-resolved constructor callees, keyed by class FQN. When present
     /// for a class, these replace re-deriving its constructor method set.
-    constructor_callees: Option<&'a HashMap<ModuleName, ConstructorCallees>>,
+    constructor_callees: Option<&'a AHashMap<ModuleName, ConstructorCallees>>,
     /// Every module in the merge, used only to resolve MRO ancestors.
     mro_modules: Option<&'a AHashSet<ModuleName>>,
     /// Re-export alias -> what it imports, so a decorator named through an alias
@@ -154,7 +152,7 @@ impl<'a> SafetyResolver<'a> {
     /// Attach class base edges.
     pub(crate) fn with_class_bases(
         mut self,
-        class_bases: &'a HashMap<ModuleName, Vec<ModuleName>>,
+        class_bases: &'a AHashMap<ModuleName, Vec<ModuleName>>,
     ) -> Self {
         self.class_bases = Some(class_bases);
         self
@@ -163,7 +161,7 @@ impl<'a> SafetyResolver<'a> {
     /// Attach the map phase's resolved constructor callees.
     pub(crate) fn with_constructor_callees(
         mut self,
-        constructor_callees: &'a HashMap<ModuleName, ConstructorCallees>,
+        constructor_callees: &'a AHashMap<ModuleName, ConstructorCallees>,
     ) -> Self {
         self.constructor_callees = Some(constructor_callees);
         self
@@ -520,7 +518,7 @@ mod tests {
         let class = ModuleName::from_str("app.Sub");
         let by_module = AHashMap::default();
         let modules = AHashSet::from_iter([app]);
-        let callees = HashMap::from([(class, ConstructorCallees::default())]);
+        let callees = AHashMap::from_iter([(class, ConstructorCallees::default())]);
         let resolver = SafetyResolver::new(&modules, &by_module).with_constructor_callees(&callees);
 
         assert_eq!(

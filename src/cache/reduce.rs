@@ -16,8 +16,6 @@
 //! the map could not close. They stay private to this module so callers cannot
 //! resolve a `LibraryCache` in place while retaining its unresolved type.
 
-use std::collections::HashMap;
-
 use pyrefly_python::module_name::ModuleName;
 use rayon::prelude::*;
 use ruff_text_size::TextRange;
@@ -43,7 +41,6 @@ use crate::errors::ErrorKind;
 use crate::errors::SafetyError;
 use crate::hasher::AHashMap;
 use crate::hasher::AHashSet;
-#[cfg(test)]
 use crate::hasher::HashMapExt;
 use crate::hasher::HashSetExt;
 use crate::hasher::union_larger;
@@ -85,9 +82,9 @@ pub struct ReduceWorkspace {
 /// it, and nothing here is ever written back out.
 #[derive(Default)]
 pub struct MergedClassFacts {
-    pub(super) class_bases: HashMap<ModuleName, Vec<ModuleName>>,
-    pub(super) class_metaclasses: HashMap<ModuleName, ModuleName>,
-    pub(super) constructor_callees: HashMap<ModuleName, ConstructorCallees>,
+    pub(super) class_bases: AHashMap<ModuleName, Vec<ModuleName>>,
+    pub(super) class_metaclasses: AHashMap<ModuleName, ModuleName>,
+    pub(super) constructor_callees: AHashMap<ModuleName, ConstructorCallees>,
 }
 
 /// A reduce workspace after all cross-library semantic resolution has completed.
@@ -275,8 +272,8 @@ struct ResolutionContext<'a> {
     /// Module -> the targets its missing and ambiguous imports newly resolved to.
     resolved_by_module: &'a AHashMap<ModuleName, AHashSet<ModuleName>>,
     func_safety_by_module: &'a AHashMap<ModuleName, AHashMap<String, FunctionSafetyInfo>>,
-    class_bases: &'a HashMap<ModuleName, Vec<ModuleName>>,
-    constructor_callees: &'a HashMap<ModuleName, ConstructorCallees>,
+    class_bases: &'a AHashMap<ModuleName, Vec<ModuleName>>,
+    constructor_callees: &'a AHashMap<ModuleName, ConstructorCallees>,
     reexport_targets: &'a ReExportTargets<'a>,
 }
 
@@ -486,7 +483,7 @@ impl LibraryCache {
         ctx: &ResolutionContext<'_>,
         return_types: &[CachedReturnType],
         outcome: &ResolutionOutcome,
-        class_properties: &HashMap<ModuleName, AHashSet<String>>,
+        class_properties: &AHashMap<ModuleName, AHashSet<String>>,
     ) {
         if class_properties.is_empty() {
             return;
@@ -574,7 +571,7 @@ impl LibraryCache {
     fn apply_class_creations(
         &mut self,
         ctx: &ResolutionContext<'_>,
-        class_metaclasses: &HashMap<ModuleName, ModuleName>,
+        class_metaclasses: &AHashMap<ModuleName, ModuleName>,
     ) {
         // `Some` only when `class` itself defines `method`; inheritance is the caller's.
         let defined =
@@ -638,7 +635,10 @@ impl LibraryCache {
         });
     }
 
-    fn apply_subclass_registrations(&mut self, class_bases: &HashMap<ModuleName, Vec<ModuleName>>) {
+    fn apply_subclass_registrations(
+        &mut self,
+        class_bases: &AHashMap<ModuleName, Vec<ModuleName>>,
+    ) {
         let mut walked = WalkedBases::default();
         let mut walker_imports: AHashMap<ModuleName, AHashSet<ModuleName>> = AHashMap::default();
         for module in &self.modules {
@@ -773,7 +773,7 @@ impl LibraryCache {
             .collect();
 
         let needed_unqualified = self.unqualified_error_names();
-        let mut module_errors: HashMap<ModuleName, Vec<(String, TextRange)>> = HashMap::new();
+        let mut module_errors: AHashMap<ModuleName, Vec<(String, TextRange)>> = AHashMap::new();
         let outcome = resolve_program(
             &module_names,
             &mut func_safety_by_module,
@@ -949,7 +949,7 @@ mod tests {
         );
         // `sub.Sub` inherits `method` from `base.Base`; it has no own entry.
         by_module.insert(ModuleName::from_str("sub"), AHashMap::new());
-        let class_bases: HashMap<ModuleName, Vec<ModuleName>> = [(
+        let class_bases: AHashMap<ModuleName, Vec<ModuleName>> = [(
             ModuleName::from_str("sub.Sub"),
             vec![ModuleName::from_str("base.Base")],
         )]
@@ -996,7 +996,7 @@ mod tests {
             .into_iter()
             .collect(),
         );
-        let class_bases: HashMap<ModuleName, Vec<ModuleName>> = [(
+        let class_bases: AHashMap<ModuleName, Vec<ModuleName>> = [(
             ModuleName::from_str("sub.Sub"),
             vec![ModuleName::from_str("base.Base")],
         )]
@@ -1035,7 +1035,7 @@ mod tests {
         // overridden Unsafe on the right branch C. C3 MRO of D is [D, B, C, A],
         // so D.method resolves to C (Unsafe); a depth-first walk would wrongly
         // reach A (Safe) first and clear the call.
-        let class_bases: HashMap<ModuleName, Vec<ModuleName>> = [
+        let class_bases: AHashMap<ModuleName, Vec<ModuleName>> = [
             (
                 ModuleName::from_str("m.D"),
                 vec![ModuleName::from_str("m.B"), ModuleName::from_str("m.C")],

@@ -11,9 +11,10 @@
 //! attribute a method to a shared ancestor that C3 would have shadowed by a
 //! right-hand branch, silently picking the wrong verdict.
 
-use std::collections::HashMap;
-
 use pyrefly_python::module_name::ModuleName;
+
+use crate::hasher::AHashMap;
+use crate::hasher::HashMapExt;
 
 /// The C3 linearization (method resolution order) of `class_fqn`, most-derived
 /// first (starting with `class_fqn` itself). `class_bases` maps a class FQN to
@@ -25,17 +26,17 @@ use pyrefly_python::module_name::ModuleName;
 /// reject at class creation) still terminates by forcing progress rather than
 /// looping.
 pub fn c3_linearize(
-    class_bases: &HashMap<ModuleName, Vec<ModuleName>>,
+    class_bases: &AHashMap<ModuleName, Vec<ModuleName>>,
     class_fqn: &ModuleName,
 ) -> Vec<ModuleName> {
-    let mut memo: HashMap<ModuleName, Vec<ModuleName>> = HashMap::new();
+    let mut memo: AHashMap<ModuleName, Vec<ModuleName>> = AHashMap::new();
     linearize(class_bases, *class_fqn, &mut memo, &mut Vec::new())
 }
 
 fn linearize(
-    class_bases: &HashMap<ModuleName, Vec<ModuleName>>,
+    class_bases: &AHashMap<ModuleName, Vec<ModuleName>>,
     class: ModuleName,
-    memo: &mut HashMap<ModuleName, Vec<ModuleName>>,
+    memo: &mut AHashMap<ModuleName, Vec<ModuleName>>,
     on_path: &mut Vec<ModuleName>,
 ) -> Vec<ModuleName> {
     if let Some(cached) = memo.get(&class) {
@@ -104,7 +105,7 @@ mod tests {
         ModuleName::from_str(s)
     }
 
-    fn bases(pairs: &[(&str, &[&str])]) -> HashMap<ModuleName, Vec<ModuleName>> {
+    fn bases(pairs: &[(&str, &[&str])]) -> AHashMap<ModuleName, Vec<ModuleName>> {
         pairs
             .iter()
             .map(|(class, bases)| (mn(class), bases.iter().map(|b| mn(b)).collect()))
