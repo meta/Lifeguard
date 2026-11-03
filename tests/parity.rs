@@ -990,6 +990,55 @@ from app import build
         assert_paths_agree_sharded(ParityFixture::new(&modules).with_stubs(&["foo.py3.cfg.types"]));
     }
 
+    /// A method decorated, in a class body, by a parameterized decorator that a
+    /// package re-exports from a submodule, as `libcst.matchers.visit` is.
+    #[test]
+    fn reexported_decorator_factory_in_a_class_body_agrees() {
+        let decorators = r#"
+MATCHERS_ATTR = "_matchers"
+
+
+def visit(matcher):
+    def inner(original):
+        setattr(original, MATCHERS_ATTR, [*getattr(original, MATCHERS_ATTR, []), matcher])
+        return original
+
+    return inner
+"#;
+        let package = r#"
+from lib.matchers._decorators import visit
+"#;
+        let app = r#"
+import lib.matchers as matchers
+
+
+class Visitor:
+    @matchers.visit("Assign")
+    def on_assign(self, node):
+        return node
+"#;
+        let modules = vec![
+            ("lib.matchers._decorators", decorators),
+            ("lib.matchers", package),
+            ("app", app),
+        ];
+        // Verdicts only: the incremental error names the alias the call wrote,
+        // the whole-program one the definition it resolved to.
+        let whole_program = sorted_names(&run_lifeguard_analysis(&modules).summary.passing_modules);
+        assert_eq!(
+            whole_program,
+            vec!["lib.matchers", "lib.matchers._decorators"]
+        );
+        for count in [1, 2, 3] {
+            let run = run_serialized(&modules, Shards::new(count), &verbose_test_options());
+            assert_eq!(
+                sorted_names(&run.analysis().summary.passing_modules),
+                whole_program,
+                "{count} shard(s): the decorator's nested function must be checked where it is defined",
+            );
+        }
+    }
+
     fn entry_as_main_options() -> Options {
         Options {
             main_module: Some(ModuleName::from_str("entry")),

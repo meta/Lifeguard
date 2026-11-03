@@ -107,7 +107,13 @@ pub(crate) struct SafetyResolver<'a> {
     constructor_callees: Option<&'a HashMap<ModuleName, ConstructorCallees>>,
     /// Every module in the merge, used only to resolve MRO ancestors.
     mro_modules: Option<&'a AHashSet<ModuleName>>,
+    /// Re-export alias -> what it imports, so a decorator named through an alias
+    /// is checked where its nested functions are defined.
+    reexport_targets: Option<&'a ReExportTargets<'a>>,
 }
+
+/// `(module, attr)` a module re-exports -> the `(module, attr)` it imports.
+pub(crate) type ReExportTargets<'a> = AHashMap<(ModuleName, &'a str), (ModuleName, &'a str)>;
 
 impl<'a> SafetyResolver<'a> {
     /// No prebuilt indices — the unqualified fallback scans `modules`.
@@ -123,6 +129,7 @@ impl<'a> SafetyResolver<'a> {
             class_bases: None,
             constructor_callees: None,
             mro_modules: None,
+            reexport_targets: None,
         }
     }
 
@@ -140,6 +147,7 @@ impl<'a> SafetyResolver<'a> {
             class_bases: None,
             constructor_callees: None,
             mro_modules: None,
+            reexport_targets: None,
         }
     }
 
@@ -164,6 +172,32 @@ impl<'a> SafetyResolver<'a> {
     pub(crate) fn with_mro_modules(mut self, modules: &'a AHashSet<ModuleName>) -> Self {
         self.mro_modules = Some(modules);
         self
+    }
+
+    pub(crate) fn with_reexport_targets(mut self, targets: &'a ReExportTargets<'a>) -> Self {
+        self.reexport_targets = Some(targets);
+        self
+    }
+
+    /// Where `module`.`local` is defined: the end of its re-export chain, or the
+    /// name itself. Bounded, since a malformed cache could describe a cycle.
+    fn reexport_definition<'n>(&self, module: ModuleName, local: &'n str) -> (ModuleName, &'n str)
+    where
+        'a: 'n,
+    {
+        const MAX_REEXPORT_HOPS: usize = 8;
+        let Some(targets) = self.reexport_targets else {
+            return (module, local);
+        };
+        let targets: &AHashMap<(ModuleName, &'n str), (ModuleName, &'n str)> = targets;
+        let mut current = (module, local);
+        for _ in 0..MAX_REEXPORT_HOPS {
+            match targets.get(&current) {
+                Some(&next) => current = next,
+                None => break,
+            }
+        }
+        current
     }
 
     /// Resolve `local` = `Class.method` (or `Outer.Inner.method`) up the MRO of
@@ -246,8 +280,9 @@ impl<'a> SafetyResolver<'a> {
     /// half of the two entry points below, which differ only in what they do
     /// with a name that names no module.
     fn decorator_safe_in(&self, module: &ModuleName, local: &str) -> bool {
+        let (module, local) = self.reexport_definition(*module, local);
         self.by_module
-            .get(module)
+            .get(&module)
             .is_some_and(|fs| lookup_decorator_in_safety_map(local, fs))
     }
 

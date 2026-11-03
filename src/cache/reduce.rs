@@ -29,6 +29,7 @@ use crate::cache::artifact::CachedModule;
 #[cfg(test)]
 use crate::cache::artifact::CachedModuleSafety;
 use crate::cache::artifact::CachedReExport;
+use crate::cache::artifact::CachedReturnType;
 use crate::cache::artifact::CachedSafety;
 use crate::cache::artifact::ConstructorCallees;
 use crate::cache::artifact::LibraryCache;
@@ -59,6 +60,7 @@ use crate::resolution::resolve_program;
 use crate::resolution::unqualified_index_key;
 use crate::runner::warn_unknown_main_module;
 use crate::safety_resolver::DecoratorVerdictMap;
+use crate::safety_resolver::ReExportTargets;
 use crate::safety_resolver::SafetyResolver;
 use crate::traits::ModuleNameExt;
 
@@ -272,6 +274,7 @@ struct ResolutionContext<'a> {
     func_safety_by_module: &'a AHashMap<ModuleName, AHashMap<String, FunctionSafetyInfo>>,
     class_bases: &'a HashMap<ModuleName, Vec<ModuleName>>,
     constructor_callees: &'a HashMap<ModuleName, ConstructorCallees>,
+    reexport_targets: &'a ReExportTargets<'a>,
 }
 
 impl<'a> ResolutionContext<'a> {
@@ -285,6 +288,7 @@ impl<'a> ResolutionContext<'a> {
             .with_class_bases(self.class_bases)
             .with_constructor_callees(self.constructor_callees)
             .with_mro_modules(self.module_names)
+            .with_reexport_targets(self.reexport_targets)
     }
 }
 
@@ -439,7 +443,8 @@ impl LibraryCache {
         let whole_program = decorator_verdicts
             .resolver(&outcome.globally_safe)
             .with_class_bases(ctx.class_bases)
-            .with_constructor_callees(ctx.constructor_callees);
+            .with_constructor_callees(ctx.constructor_callees)
+            .with_reexport_targets(ctx.reexport_targets);
         let promoted: AHashSet<(ModuleName, String)> = outcome.promoted.iter().cloned().collect();
 
         self.modules.par_iter_mut().for_each(|module| {
@@ -475,19 +480,15 @@ impl LibraryCache {
     /// final and the errors it adds are not then considered for clearing.
     fn resolve_property_candidates(
         &mut self,
-        module_names: &AHashSet<ModuleName>,
-        func_safety_by_module: &AHashMap<ModuleName, AHashMap<String, FunctionSafetyInfo>>,
+        ctx: &ResolutionContext<'_>,
+        return_types: &[CachedReturnType],
         outcome: &ResolutionOutcome,
         class_properties: &HashMap<ModuleName, AHashSet<String>>,
     ) {
         if class_properties.is_empty() {
             return;
         }
-        let Self {
-            modules, exports, ..
-        } = self;
-        let return_classes: AHashMap<ModuleName, ModuleName> = exports
-            .return_types
+        let return_classes: AHashMap<ModuleName, ModuleName> = return_types
             .iter()
             .map(|rt| (rt.function, rt.class))
             .collect();
@@ -496,23 +497,14 @@ impl LibraryCache {
         // `factory.make`. Looking up the alias alone misses, the candidate is
         // dropped, and dropping one is a false-safe -- no error is emitted for a
         // getter that is unsafe.
-        let reexport_targets: AHashMap<(ModuleName, &str), (ModuleName, &str)> = exports
-            .re_exports
-            .par_iter()
-            .map(|re| {
-                (
-                    (re.exported_module, re.exported_attr.as_str()),
-                    (re.imported_module, re.imported_attr.as_str()),
-                )
-            })
-            .collect();
+        let reexport_targets = ctx.reexport_targets;
         let resolver = SafetyResolver::with_safe_index(
-            module_names,
-            func_safety_by_module,
+            ctx.module_names,
+            ctx.func_safety_by_module,
             &outcome.globally_safe,
         );
 
-        modules.par_iter_mut().for_each(|module| {
+        self.modules.par_iter_mut().for_each(|module| {
             let candidates = std::mem::take(&mut module.property_candidates);
             let CachedSafety::Ok(ref mut safety) = module.safety else {
                 return;
@@ -522,7 +514,7 @@ impl LibraryCache {
                     continue;
                 };
                 let class_fqn =
-                    match resolve_return_class(receiver, &return_classes, &reexport_targets) {
+                    match resolve_return_class(receiver, &return_classes, reexport_targets) {
                         Some(class) => class,
                         None => receiver,
                     };
@@ -619,6 +611,20 @@ impl LibraryCache {
 
         self.propagate_re_export_safety();
 
+        // Taken so the borrowed alias index can outlive the `&mut self` calls
+        // below; put back once resolution is done.
+        let exports = std::mem::take(&mut self.exports);
+        let reexport_targets: ReExportTargets<'_> = exports
+            .re_exports
+            .par_iter()
+            .map(|re| {
+                (
+                    (re.exported_module, re.exported_attr.as_str()),
+                    (re.imported_module, re.imported_attr.as_str()),
+                )
+            })
+            .collect();
+
         let mut func_safety_by_module: AHashMap<ModuleName, AHashMap<String, FunctionSafetyInfo>> =
             self.modules
                 .iter_mut()
@@ -671,7 +677,8 @@ impl LibraryCache {
                     let resolver = SafetyResolver::new(&resolved_modules, &func_safety_by_module)
                         .with_class_bases(&class_bases)
                         .with_constructor_callees(&constructor_callees)
-                        .with_mro_modules(&module_names);
+                        .with_mro_modules(&module_names)
+                        .with_reexport_targets(&reexport_targets);
                     // A recorded constructor callee outranks the class's
                     // aggregate verdict here too, or the error is gone before
                     // `finalize_resolution` ever sees it.
@@ -716,23 +723,18 @@ impl LibraryCache {
         }
         self.apply_subclass_registrations(&class_bases);
 
-        self.finalize_resolution(
-            &ResolutionContext {
-                module_names: &module_names,
-                resolved_by_module: &resolved_by_module,
-                func_safety_by_module: &func_safety_by_module,
-                class_bases: &class_bases,
-                constructor_callees: &constructor_callees,
-            },
-            &outcome,
-        );
-
-        self.resolve_property_candidates(
-            &module_names,
-            &func_safety_by_module,
-            &outcome,
-            &class_properties,
-        );
+        let ctx = ResolutionContext {
+            module_names: &module_names,
+            resolved_by_module: &resolved_by_module,
+            func_safety_by_module: &func_safety_by_module,
+            class_bases: &class_bases,
+            constructor_callees: &constructor_callees,
+            reexport_targets: &reexport_targets,
+        };
+        self.finalize_resolution(&ctx, &outcome);
+        self.resolve_property_candidates(&ctx, &exports.return_types, &outcome, &class_properties);
+        drop(reexport_targets);
+        self.exports = exports;
 
         // Return the verdicts taken at the top; resolution needed them in one flat
         // map to do cross-module lookups while `self.modules` was borrowed mutably.
