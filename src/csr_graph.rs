@@ -11,10 +11,10 @@
 //! the whole adjacency in two flat arrays and runs an allocation-light iterative
 //! Tarjan SCC.
 //!
-//! Sole production use is the call graph in `project/call_graph.rs`, where a self-loop is
-//! recursion and therefore a cycle. For the module-scale import graph
-//! (ModuleName keys, petgraph-backed, self-imports not cycles), see
-//! `graph::Graph`.
+//! Its cycle queries serve the call graph in `project/call_graph.rs`, where a self-loop is
+//! recursion and therefore a cycle. The module-scale import graph (ModuleName keys,
+//! petgraph-backed, self-imports not cycles) is `graph::Graph`, which exports a
+//! `CsrGraph` for hot walks; `from_edges` keeps each node's edges in input order.
 
 /// A directed graph over nodes `0..num_nodes`, stored as CSR adjacency.
 pub struct CsrGraph {

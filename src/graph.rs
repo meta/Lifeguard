@@ -21,6 +21,7 @@ use petgraph::visit::EdgeRef;
 use pyrefly_python::module_name::ModuleName;
 use rayon::prelude::*;
 
+use crate::csr_graph::CsrGraph;
 use crate::hasher::AHashMap;
 use crate::hasher::HashMapExt;
 use crate::traits::ModuleNameExt;
@@ -108,6 +109,33 @@ impl Graph {
     /// Get an iterator over all the neighbors of a node.
     pub fn neighbors(&self, node: &ModuleName) -> impl Iterator<Item = &ModuleName> {
         self.find_edges(node, Direction::Outgoing)
+    }
+
+    /// Adjacency over `NodeIndex::index()` in flat arrays, following `direction`.
+    pub(crate) fn csr(&self, direction: Direction) -> CsrGraph {
+        let edges: Vec<(u32, u32)> = self
+            .graph
+            .raw_edges()
+            .iter()
+            .map(|e| {
+                let (s, t) = (e.source().index() as u32, e.target().index() as u32);
+                match direction {
+                    Direction::Outgoing => (s, t),
+                    Direction::Incoming => (t, s),
+                }
+            })
+            .collect();
+        CsrGraph::from_edges(self.graph.node_count(), &edges)
+    }
+
+    /// Where `node` is stored, for walks that should not re-hash a name per step.
+    /// Indices are dense, `0..node_count`, as `csr` numbers them.
+    pub(crate) fn index_of(&self, node: &ModuleName) -> Option<u32> {
+        self.nodes.get(node).map(|ix| ix.index() as u32)
+    }
+
+    pub(crate) fn name_at(&self, ix: u32) -> &ModuleName {
+        &self.graph[NodeIndex::new(ix as usize)]
     }
 
     /// Get an iterator over all the reverse neighbors of a node, i.e. all nodes that point back to

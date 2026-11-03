@@ -12,6 +12,7 @@ use std::collections::hash_map::Entry;
 
 use dashmap::DashMap;
 use itertools::Itertools;
+use petgraph::Direction;
 use pyrefly_python::module_name::ModuleName;
 use rayon::prelude::*;
 use starlark_map::small_set::SmallSet;
@@ -20,9 +21,11 @@ use crate::cache::CachedModule;
 use crate::cache::CachedReExport;
 use crate::cache::CachedSafety;
 use crate::cache::ResolvedCache;
+use crate::csr_graph::CsrGraph;
 use crate::errors::ErrorKind;
 use crate::errors::ErrorMetadata;
 use crate::exports::Exports;
+use crate::graph::Graph;
 use crate::hasher::AHashMap;
 use crate::hasher::AHashSet;
 use crate::hasher::HashMapExt;
@@ -412,36 +415,69 @@ fn build_lazy_eligible(
     lazy_eligible
 }
 
-/// Hops from each transitive importer of `target` down to its direct importers, at zero.
-/// Stops once every consumer is reached: chains only descend, so nothing beyond is on one.
-fn hops_to_target(
-    import_graph: &ImportGraph,
-    target: &ModuleName,
-    consumers: &[ModuleName],
-) -> AHashMap<ModuleName, u32> {
-    let mut unreached: AHashSet<ModuleName> = consumers.iter().copied().collect();
-    let mut hops: AHashMap<ModuleName, u32> = AHashMap::new();
-    let mut frontier: Vec<ModuleName> = import_graph.get_importers(target).copied().collect();
-    let mut depth = 0;
-    while !frontier.is_empty() && !unreached.is_empty() {
-        let mut next = Vec::new();
-        for m in frontier {
-            if hops.contains_key(&m) {
-                continue;
-            }
-            hops.insert(m, depth);
-            unreached.remove(&m);
-            next.extend(
-                import_graph
-                    .get_importers(&m)
-                    .filter(|n| !hops.contains_key(*n))
-                    .copied(),
-            );
+/// Per-worker BFS state sized to the graph, reset after each target.
+struct ChainScratch {
+    /// Hops to the target plus one; zero is unreached.
+    hops: Vec<u32>,
+    is_consumer: Vec<bool>,
+    touched: Vec<u32>,
+}
+
+impl ChainScratch {
+    fn new(num_nodes: usize) -> Self {
+        Self {
+            hops: vec![0; num_nodes],
+            is_consumer: vec![false; num_nodes],
+            touched: Vec::new(),
         }
-        frontier = next;
-        depth += 1;
     }
-    hops
+
+    fn hops(&self, ix: u32) -> Option<u32> {
+        self.hops[ix as usize].checked_sub(1)
+    }
+
+    /// Hops from each transitive importer of `target` down to its direct importers, at zero.
+    /// Stops once every consumer is reached: chains only descend, so nothing beyond is on one.
+    fn fill(&mut self, importers: &CsrGraph, target: u32, consumers: &[u32]) {
+        let mut unreached = 0;
+        for &c in consumers {
+            if !std::mem::replace(&mut self.is_consumer[c as usize], true) {
+                unreached += 1;
+            }
+        }
+        let mut frontier: Vec<u32> = importers.neighbors(target).to_vec();
+        let mut depth = 1;
+        while !frontier.is_empty() && unreached > 0 {
+            let mut next = Vec::new();
+            for m in frontier {
+                if self.hops[m as usize] != 0 {
+                    continue;
+                }
+                self.hops[m as usize] = depth;
+                self.touched.push(m);
+                if self.is_consumer[m as usize] {
+                    unreached -= 1;
+                }
+                next.extend(
+                    importers
+                        .neighbors(m)
+                        .iter()
+                        .filter(|&&n| self.hops[n as usize] == 0),
+                );
+            }
+            frontier = next;
+            depth += 1;
+        }
+        for &c in consumers {
+            self.is_consumer[c as usize] = false;
+        }
+    }
+
+    fn reset(&mut self) {
+        for m in self.touched.drain(..) {
+            self.hops[m as usize] = 0;
+        }
+    }
 }
 
 /// Guard the passing modules on one chain `consumer -> ... -> target` with `target`.
@@ -463,36 +499,49 @@ fn propagate_implicit_imports_along_chains(
         }
     }
 
-    consumers_by_target
-        .par_iter()
-        .for_each(|(target, consumers)| {
+    let graph = &import_graph.graph;
+    let imports = graph.csr(Direction::Outgoing);
+    let importers = graph.csr(Direction::Incoming);
+    // Scratch is sized to the graph and `for_each_init` builds one per split, so keep splits coarse.
+    let targets: Vec<(&ModuleName, &Vec<ModuleName>)> = consumers_by_target.iter().collect();
+    targets.par_iter().with_min_len(256).for_each_init(
+        || ChainScratch::new(imports.num_nodes()),
+        |scratch, &(target, consumers)| {
             if classified.passing_modules.contains(target) {
                 lazy_eligible.entry(*target).or_default().insert(*target);
             }
+            // Outside the graph there is no edge, so no chain to guard.
+            let Some(target_ix) = graph.index_of(target) else {
+                return;
+            };
             // A consumer that imports `target` itself needs no chain.
-            let needs_chain: Vec<ModuleName> = consumers
+            let needs_chain: Vec<u32> = consumers
                 .iter()
-                .filter(|c| !import_graph.get_imports(c).any(|m| m == target))
-                .copied()
+                .filter_map(|c| graph.index_of(c))
+                .filter(|&c| !imports.neighbors(c).contains(&target_ix))
                 .collect();
-            let hops = hops_to_target(import_graph, target, &needs_chain);
-            for consumer in &needs_chain {
+            scratch.fill(&importers, target_ix, &needs_chain);
+            for &consumer in &needs_chain {
                 guard_shortest_chain(ChainGuard {
-                    import_graph,
-                    hops: &hops,
+                    graph,
+                    imports: &imports,
+                    scratch,
                     consumer,
                     target,
                     classified,
                     lazy_eligible,
                 });
             }
-        });
+            scratch.reset();
+        },
+    );
 }
 
 struct ChainGuard<'a> {
-    import_graph: &'a ImportGraph,
-    hops: &'a AHashMap<ModuleName, u32>,
-    consumer: &'a ModuleName,
+    graph: &'a Graph,
+    imports: &'a CsrGraph,
+    scratch: &'a ChainScratch,
+    consumer: u32,
     target: &'a ModuleName,
     classified: &'a ClassifiedModules,
     lazy_eligible: &'a DashMap<ModuleName, SmallSet<ModuleName>>,
@@ -501,16 +550,20 @@ struct ChainGuard<'a> {
 /// Each step lands exactly one hop lower, so the walk reaches a direct importer of
 /// `target` even through a cycle. Ties go to the lower module name, for reproducibility.
 fn guard_shortest_chain(ctx: ChainGuard<'_>) {
-    let mut current = *ctx.consumer;
-    while let Some((hops, next)) = ctx
-        .import_graph
-        .get_imports(&current)
-        .filter_map(|m| ctx.hops.get(m).map(|hops| (*hops, *m)))
+    let mut current = ctx.consumer;
+    while let Some((hops, next_name, next)) = ctx
+        .imports
+        .neighbors(current)
+        .iter()
+        .filter_map(|&m| {
+            let hops = ctx.scratch.hops(m)?;
+            Some((hops, *ctx.graph.name_at(m), m))
+        })
         .min()
     {
-        if ctx.classified.passing_modules.contains(&next) {
+        if ctx.classified.passing_modules.contains(&next_name) {
             ctx.lazy_eligible
-                .entry(next)
+                .entry(next_name)
                 .or_default()
                 .insert(*ctx.target);
         }

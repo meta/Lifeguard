@@ -145,7 +145,7 @@ it means carrying guard-derived edges in the cache for the reduce to drop.
 - `builtins.rs` - Builtin function resolution (e.g., `list`, `open`, `eval`)
 - `known_functions.rs` - One query surface over stub effects, builtins, and the manual safelist
 - `graph.rs` - ModuleName-keyed import graph over `petgraph::DiGraph`; multi-node SCCs only (a self-import is not a cycle)
-- `csr_graph.rs` - Compact CSR call graph with an allocation-light iterative Tarjan, for million-node graphs (a self-loop is recursion, so it counts)
+- `csr_graph.rs` - Compact CSR graph with an allocation-light iterative Tarjan, for million-node graphs: the call graph (a self-loop is recursion, so it counts), and flat import-graph adjacency for the output walks
 - `manual_override.rs` - Hardcoded list of functions declared safe (`SAFE_FUNCTIONS_ARRAY`)
 - `module_parser.rs` - Module parsing abstraction
 - `config.rs` - Analysis configuration (`AnalysisConfig`)
