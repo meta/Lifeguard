@@ -509,29 +509,68 @@ where
         .collect()
 }
 
-/// Resolve to a non-blocking verdict, using the demanded-name global indices
-/// only for genuinely unqualified callees.
-fn resolve_callee_verdict(
-    callee: &ResolvedCallee,
+/// A callee whose verdict can still change during the fixpoint.
+enum LinkedCallee {
+    /// Index of another candidate: blocking until it is promoted.
+    Candidate(u32),
+    Unqualified(String),
+}
+
+/// Fold each candidate's fixed callees into its base verdict and point the rest at
+/// candidates. Only candidates are promoted, so a fixed blocking callee rules its caller out.
+fn link_candidates(
+    candidates: &mut [PromotionCandidate],
     function_safety: &AHashMap<ModuleName, AHashMap<String, FunctionSafetyInfo>>,
+) -> Vec<Option<(FunctionSafety, Vec<LinkedCallee>)>> {
+    let split: Vec<Vec<ResolvedCallee>> = candidates
+        .iter_mut()
+        .map(|c| std::mem::take(&mut c.callees))
+        .collect();
+    let index: AHashMap<(ModuleName, &str), u32> = candidates
+        .iter()
+        .enumerate()
+        .map(|(i, c)| ((c.module, c.name.as_str()), i as u32))
+        .collect();
+    candidates
+        .par_iter()
+        .zip(split)
+        .map(|(candidate, split)| {
+            let mut base = candidate.base_verdict;
+            let mut callees = Vec::new();
+            for callee in split {
+                match callee {
+                    ResolvedCallee::Qualified { module, local } => {
+                        if let Some(&other) = index.get(&(module, local.as_str())) {
+                            callees.push(LinkedCallee::Candidate(other));
+                        } else {
+                            base.insert(
+                                get_function_safety(function_safety, &module, &local)
+                                    .map(|info| info.verdict)
+                                    .and_then(maybe_non_blocking_verdict)?,
+                            );
+                        }
+                    }
+                    ResolvedCallee::Unqualified { name } => {
+                        callees.push(LinkedCallee::Unqualified(name));
+                    }
+                }
+            }
+            Some((base, callees))
+        })
+        .collect()
+}
+
+fn unqualified_verdict(
+    name: &str,
     globally_safe: &AHashSet<String>,
     globally_if_imported: &AHashSet<String>,
 ) -> Option<FunctionSafety> {
-    match callee {
-        ResolvedCallee::Qualified { module, local } => function_safety
-            .get(module)
-            .and_then(|functions| functions.get(local))
-            .map(|info| info.verdict)
-            .and_then(maybe_non_blocking_verdict),
-        ResolvedCallee::Unqualified { name } => {
-            if globally_safe.contains(name.as_str()) {
-                Some(FunctionSafety::Safe)
-            } else if globally_if_imported.contains(name.as_str()) {
-                Some(FunctionSafety::UnsafeIfImported)
-            } else {
-                None
-            }
-        }
+    if globally_safe.contains(name) {
+        Some(FunctionSafety::Safe)
+    } else if globally_if_imported.contains(name) {
+        Some(FunctionSafety::UnsafeIfImported)
+    } else {
+        None
     }
 }
 
@@ -545,7 +584,7 @@ fn promote_fixpoint(
 ) -> (Vec<(ModuleName, String)>, AHashSet<String>) {
     // The promotion guard is stable: promotion only removes
     // `UnsafeMissingDep`. Precompute candidates and split their callees once.
-    let candidates: Vec<PromotionCandidate> = match search {
+    let mut candidates: Vec<PromotionCandidate> = match search {
         NameSearch::Intern => collect_promotion_candidates(module_names, function_safety, |name| {
             resolve_callee(name, enclosing_module(name, |m| module_names.contains(m)))
         }),
@@ -616,42 +655,42 @@ fn promote_fixpoint(
     // Each round reads a frozen start-of-round state in parallel, then commits
     // all promotions together. This matches a full synchronized rescan.
     //
-    // NOTE: Every round rescans every candidate that has not been promoted,
-    // rather than tracking which ones the previous round could have unblocked.
-    // The scan is parallel and promotion chains are shallow; constructing a
-    // reverse index to narrow the scan turned out to be ~40x more expensive
-    // than the scan itself.
+    // NOTE: Every round rescans every live candidate rather than only those the
+    // previous round could have unblocked. Linked, a scan is a few array reads per
+    // callee; a worklist would also need a name -> waiters index for unqualified callees.
+    let linked = link_candidates(&mut candidates, function_safety);
+    let mut live: Vec<(u32, &(FunctionSafety, Vec<LinkedCallee>))> = linked
+        .iter()
+        .enumerate()
+        .filter_map(|(i, l)| Some((i as u32, l.as_ref()?)))
+        .collect();
+    let mut promoted_verdicts: Vec<Option<FunctionSafety>> = vec![None; candidates.len()];
     let mut promoted = Vec::new();
-    let mut promoted_flags = vec![false; candidates.len()];
     loop {
         // Frozen phase: no promotion in this round observes another from the same round.
-        let frozen: &AHashMap<ModuleName, AHashMap<String, FunctionSafetyInfo>> = function_safety;
-        let to_promote: Vec<(u32, FunctionSafety)> = (0..candidates.len() as u32)
-            .into_par_iter()
-            .filter_map(|index| {
-                if promoted_flags[index as usize] {
-                    return None;
-                }
-                let candidate = &candidates[index as usize];
-                let mut target = candidate.base_verdict;
-                for callee in &candidate.callees {
-                    target.insert(resolve_callee_verdict(
-                        callee,
-                        frozen,
-                        &globally_safe,
-                        &globally_if_imported,
-                    )?);
-                }
-                Some((index, target))
-            })
-            .collect();
+        let to_promote: Vec<(u32, FunctionSafety)> =
+            live.par_iter()
+                .filter_map(|&(index, (base_verdict, callees))| {
+                    let mut target = *base_verdict;
+                    for callee in callees {
+                        target.insert(match callee {
+                            LinkedCallee::Candidate(other) => promoted_verdicts[*other as usize]
+                                .and_then(maybe_non_blocking_verdict),
+                            LinkedCallee::Unqualified(name) => {
+                                unqualified_verdict(name, &globally_safe, &globally_if_imported)
+                            }
+                        }?);
+                    }
+                    Some((index, target))
+                })
+                .collect();
         if to_promote.is_empty() {
             break;
         }
 
         // Apply phase: commit verdicts and seed demanded-name indices for the next round.
         for &(index, target) in &to_promote {
-            promoted_flags[index as usize] = true;
+            promoted_verdicts[index as usize] = Some(target);
             let candidate = &candidates[index as usize];
             if let Some(info) =
                 get_function_safety_mut(function_safety, &candidate.module, &candidate.name)
@@ -669,6 +708,7 @@ fn promote_fixpoint(
                 promoted.push((candidate.module, candidate.name.clone()));
             }
         }
+        live.retain(|&(index, _)| promoted_verdicts[index as usize].is_none());
     }
     (promoted, globally_safe)
 }
