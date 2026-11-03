@@ -247,7 +247,11 @@ mod tests {
             &exports,
             &output.side_effect_imports,
         );
-        cache.set_class_facts(output.class_bases, output.class_properties);
+        cache.set_class_facts(
+            output.class_bases,
+            output.class_metaclasses,
+            output.class_properties,
+        );
         let resolved = ReduceWorkspace::single(cache, default_python_version()).resolve(None);
         let registrations: Vec<&str> = resolved
             .modules()

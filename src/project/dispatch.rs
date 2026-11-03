@@ -22,7 +22,7 @@ use crate::project::info::ProjectInfo;
 use crate::traits::ModuleNameExt;
 
 /// What `type.__call__` runs on the metaclass when a `class` statement creates a class.
-const METACLASS_CREATION_METHODS: [&str; 2] = ["__new__", "__init__"];
+pub(crate) const METACLASS_CREATION_METHODS: [&str; 2] = ["__new__", "__init__"];
 
 /// The functions a constructor call to `cls_name` may dispatch to, in the
 /// order `check_constructor_call` checks them: `CONSTRUCTOR_METHODS` on the

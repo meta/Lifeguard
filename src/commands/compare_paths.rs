@@ -169,7 +169,11 @@ fn run_single_pass(
         );
         // Both paths have to see the same class facts, or the comparison reports
         // divergence that is an artifact of how the two caches were built.
-        cache.set_class_facts(result.class_bases, result.class_properties);
+        cache.set_class_facts(
+            result.class_bases,
+            result.class_metaclasses,
+            result.class_properties,
+        );
         cache.set_constructor_callees(result.constructor_callees);
         post_resolution_errors(cache, options)
     } else {
@@ -205,7 +209,11 @@ fn run_incremental(
         &result.exports,
         &result.side_effect_imports,
     );
-    cache.set_class_facts(result.class_bases, result.class_properties);
+    cache.set_class_facts(
+        result.class_bases,
+        result.class_metaclasses,
+        result.class_properties,
+    );
     cache.set_constructor_callees(result.constructor_callees);
     let resolved = time("Resolving incremental cache", || {
         ReduceWorkspace::single(cache, options.python_version).resolve(options.main_module)

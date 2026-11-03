@@ -116,6 +116,14 @@ impl ClassTable {
             .collect()
     }
 
+    /// Class FQN -> its declared metaclass FQN, for classes that declare one.
+    pub fn metaclass_edges(&self) -> Vec<(ModuleName, ModuleName)> {
+        self.table
+            .iter()
+            .filter_map(|(name, class)| Some((*name, class.metaclass?)))
+            .collect()
+    }
+
     /// Class FQN -> the names of its property fields.
     /// The reduce needs this to tell whether an attribute access on a
     /// newly resolved class runs a getter.

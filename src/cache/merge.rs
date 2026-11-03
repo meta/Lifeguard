@@ -157,6 +157,9 @@ impl LibraryCache {
             self.modules.extend(dep.modules);
             re_export_batches.push(dep.exports.re_exports);
             fold_fqn_lists(&mut merged.class_bases, dep.class_bases);
+            for (class, metaclass) in dep.class_metaclasses {
+                merged.class_metaclasses.entry(class).or_insert(metaclass);
+            }
             fold_constructor_callees(&mut merged.constructor_callees, dep.constructor_callees);
             self.class_properties.extend(dep.class_properties);
             self.exports.return_types.extend(dep.exports.return_types);

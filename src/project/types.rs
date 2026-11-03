@@ -40,6 +40,9 @@ pub struct AnalysisOutput {
     /// Class FQN -> base-class FQNs, for reduce-time MRO resolution of inherited
     /// `Class.method` calls.
     pub class_bases: Vec<(ModuleName, Vec<ModuleName>)>,
+    /// Class FQN -> declared metaclass FQN, for resolving the class creations a
+    /// library could not see through.
+    pub class_metaclasses: Vec<(ModuleName, ModuleName)>,
     /// Class FQN -> the functions a constructor call to it dispatches to,
     /// resolved here where the class table is complete.
     pub constructor_callees: Vec<(ModuleName, ConstructorCallees)>,

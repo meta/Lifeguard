@@ -49,9 +49,11 @@ use crate::hasher::HashSetExt;
 use crate::hasher::union_larger;
 use crate::imports::ImportGraph;
 use crate::imports::resolve_to_known_module;
-#[cfg(test)]
 use crate::module_safety::FunctionSafety;
 use crate::module_safety::FunctionSafetyInfo;
+use crate::mro::c3_linearize;
+use crate::names::enclosing_module;
+use crate::project::METACLASS_CREATION_METHODS;
 use crate::pyrefly::sys_info::PythonVersion;
 use crate::resolution::NameSearch;
 use crate::resolution::ResolutionOutcome;
@@ -84,6 +86,7 @@ pub struct ReduceWorkspace {
 #[derive(Default)]
 pub struct MergedClassFacts {
     pub(super) class_bases: HashMap<ModuleName, Vec<ModuleName>>,
+    pub(super) class_metaclasses: HashMap<ModuleName, ModuleName>,
     pub(super) constructor_callees: HashMap<ModuleName, ConstructorCallees>,
 }
 
@@ -564,6 +567,77 @@ impl LibraryCache {
     }
 
     /// Mirrors the whole-program pass, which this library-by-library cache could not run.
+    /// Errors for what module-scope `class` statements run: the metaclass's
+    /// `__new__` and `__init__` and the nearest inherited `__init_subclass__`.
+    /// Any of these may live in a library the map could not see; a callee the
+    /// map already reported is not reported twice.
+    fn apply_class_creations(
+        &mut self,
+        ctx: &ResolutionContext<'_>,
+        class_metaclasses: &HashMap<ModuleName, ModuleName>,
+    ) {
+        // `Some` only when `class` itself defines `method`; inheritance is the caller's.
+        let defined =
+            |class: &ModuleName, method: &str| -> Option<(ModuleName, String, FunctionSafety)> {
+                let (module, local) =
+                    enclosing_module(class.as_str(), |m| ctx.module_names.contains(m))?;
+                let key = format!("{local}.{method}");
+                let verdict = ctx.func_safety_by_module.get(&module)?.get(&key)?.verdict;
+                Some((module, format!("{}.{key}", module.as_str()), verdict))
+            };
+        let mro = |class: &ModuleName| -> Vec<ModuleName> {
+            if ctx.class_bases.contains_key(class) {
+                c3_linearize(ctx.class_bases, class)
+            } else {
+                vec![*class]
+            }
+        };
+
+        self.modules.par_iter_mut().for_each(|module| {
+            let CachedSafety::Ok(ref mut safety) = module.safety else {
+                return;
+            };
+            for candidate in &module.subclass_candidates {
+                let class_mro = mro(&candidate.class);
+                let metaclass_callees = class_mro
+                    .iter()
+                    .find_map(|class| class_metaclasses.get(class))
+                    .map(|metaclass| {
+                        let metaclass_mro = mro(metaclass);
+                        METACLASS_CREATION_METHODS
+                            .iter()
+                            .filter_map(|method| {
+                                metaclass_mro
+                                    .iter()
+                                    .find_map(|class| defined(class, method))
+                            })
+                            .collect::<Vec<_>>()
+                    })
+                    .unwrap_or_default();
+                let init_subclass = class_mro
+                    .iter()
+                    .skip(1)
+                    .find_map(|class| defined(class, "__init_subclass__"));
+
+                for (owner, callee, verdict) in metaclass_callees.into_iter().chain(init_subclass) {
+                    // `UnsafeIfImported` is non-blocking only in the module defining it.
+                    let non_blocking = verdict.is_safe()
+                        || (verdict == FunctionSafety::UnsafeIfImported && owner == module.name);
+                    if non_blocking || safety.errors.iter().any(|e| e.metadata.as_str() == callee) {
+                        continue;
+                    }
+                    let error =
+                        SafetyError::new(ErrorKind::UnsafeFunctionCall, callee, candidate.range);
+                    safety.errors.push(if candidate.from_main_guard {
+                        error.from_main_guard()
+                    } else {
+                        error
+                    });
+                }
+            }
+        });
+    }
+
     fn apply_subclass_registrations(&mut self, class_bases: &HashMap<ModuleName, Vec<ModuleName>>) {
         let mut walked = WalkedBases::default();
         let mut walker_imports: AHashMap<ModuleName, AHashSet<ModuleName>> = AHashMap::default();
@@ -602,6 +676,10 @@ impl LibraryCache {
 
         let mut class_bases = merged.class_bases;
         fold_fqn_lists(&mut class_bases, std::mem::take(&mut self.class_bases));
+        let mut class_metaclasses = merged.class_metaclasses;
+        for (class, metaclass) in std::mem::take(&mut self.class_metaclasses) {
+            class_metaclasses.entry(class).or_insert(metaclass);
+        }
         let mut constructor_callees = merged.constructor_callees;
         fold_constructor_callees(
             &mut constructor_callees,
@@ -721,8 +799,6 @@ impl LibraryCache {
                 }));
             }
         }
-        self.apply_subclass_registrations(&class_bases);
-
         let ctx = ResolutionContext {
             module_names: &module_names,
             resolved_by_module: &resolved_by_module,
@@ -731,6 +807,8 @@ impl LibraryCache {
             constructor_callees: &constructor_callees,
             reexport_targets: &reexport_targets,
         };
+        self.apply_class_creations(&ctx, &class_metaclasses);
+        self.apply_subclass_registrations(&class_bases);
         self.finalize_resolution(&ctx, &outcome);
         self.resolve_property_candidates(&ctx, &exports.return_types, &outcome, &class_properties);
         drop(reexport_targets);

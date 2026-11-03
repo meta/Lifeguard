@@ -226,7 +226,11 @@ mod tests {
         );
         // Mirror what `analyze-library` attaches, so these tests exercise the
         // recorded class facts rather than an empty cache.
-        cache.set_class_facts(output.class_bases, output.class_properties);
+        cache.set_class_facts(
+            output.class_bases,
+            output.class_metaclasses,
+            output.class_properties,
+        );
         cache.set_constructor_callees(output.constructor_callees);
         cache
     }
@@ -308,7 +312,7 @@ mod tests {
     #[cfg(target_pointer_width = "64")]
     fn test_cached_struct_sizes() {
         // Wire fields only: the reduce-side accumulators live on `ReduceWorkspace`.
-        assert_eq!(std::mem::size_of::<LibraryCache>(), 144);
+        assert_eq!(std::mem::size_of::<LibraryCache>(), 168);
         assert_eq!(
             std::mem::size_of::<lifeguard::cache::ConstructorCallees>(),
             40,

@@ -66,6 +66,7 @@ struct WireHeader {
     exports: Vec<WireReExport>,
     return_types: Vec<(NameId, NameId)>,
     class_bases: Vec<(NameId, Vec<NameId>)>,
+    class_metaclasses: Vec<(NameId, NameId)>,
     /// Class id, its metaclass id when a metaclass bit is set, and the callee
     /// mask. The callee FQNs themselves are reconstructible from these, so they
     /// stay out of the name table entirely.
@@ -180,6 +181,10 @@ impl NameTable {
         for (class, bases) in &cache.class_bases {
             unique.insert(*class);
             unique.extend(bases.iter().copied());
+        }
+        for (class, metaclass) in &cache.class_metaclasses {
+            unique.insert(*class);
+            unique.insert(*metaclass);
         }
         for (class, recorded) in &cache.constructor_callees {
             unique.insert(*class);
@@ -319,6 +324,13 @@ pub(crate) fn write(cache: &LibraryCache, path: &Path) -> Result<()> {
         .collect();
     class_bases.sort_unstable();
 
+    let mut class_metaclasses: Vec<(NameId, NameId)> = cache
+        .class_metaclasses
+        .iter()
+        .map(|(class, metaclass)| (table.id(*class), table.id(*metaclass)))
+        .collect();
+    class_metaclasses.sort_unstable();
+
     // The map phase collects these in parallel, so the sequence arrives in
     // nondeterministic order. `extra` is an order-insensitive callee set, so it
     // is sorted too rather than left to whichever library contributed first.
@@ -355,6 +367,7 @@ pub(crate) fn write(cache: &LibraryCache, path: &Path) -> Result<()> {
         exports,
         return_types,
         class_bases,
+        class_metaclasses,
         constructor_callees,
         class_properties,
     };
@@ -441,6 +454,16 @@ pub(crate) fn read(path: &Path) -> Result<LibraryCache> {
             ))
         })
         .collect::<Result<_>>()?;
+    let class_metaclasses = header
+        .class_metaclasses
+        .into_iter()
+        .map(|(class, metaclass)| {
+            Ok((
+                decode_name(&header.names, class)?,
+                decode_name(&header.names, metaclass)?,
+            ))
+        })
+        .collect::<Result<_>>()?;
     let constructor_callees = header
         .constructor_callees
         .into_iter()
@@ -466,6 +489,7 @@ pub(crate) fn read(path: &Path) -> Result<LibraryCache> {
         modules,
         exports,
         class_bases,
+        class_metaclasses,
         class_properties,
         constructor_callees,
         ..Default::default()
@@ -945,6 +969,13 @@ mod tests {
                 vec![
                     (mn("pkg.zeta.Zeta"), vec![mn("pkg.b.B"), mn("pkg.a.A")]),
                     (mn("pkg.alpha.Alpha"), vec![mn("pkg.a.A")]),
+                ],
+            ),
+            class_metaclasses: arrange(
+                reversed,
+                vec![
+                    (mn("pkg.zeta.Zeta"), mn("pkg.meta.ZetaMeta")),
+                    (mn("pkg.alpha.Alpha"), mn("pkg.meta.AlphaMeta")),
                 ],
             ),
             ..Default::default()

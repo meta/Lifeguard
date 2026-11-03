@@ -132,6 +132,7 @@ pub struct WholeProgramFacts {
     pub exports: crate::exports::Exports,
     pub side_effect_imports: project::SideEffectMap,
     pub class_bases: Vec<(ModuleName, Vec<ModuleName>)>,
+    pub class_metaclasses: Vec<(ModuleName, ModuleName)>,
     pub constructor_callees: Vec<(ModuleName, ConstructorCallees)>,
     pub class_properties: Vec<(ModuleName, Vec<String>)>,
 }
@@ -144,6 +145,7 @@ pub struct LibraryAnalysisFacts {
     pub exports: crate::exports::Exports,
     pub side_effect_imports: project::SideEffectMap,
     pub class_bases: Vec<(ModuleName, Vec<ModuleName>)>,
+    pub class_metaclasses: Vec<(ModuleName, ModuleName)>,
     pub constructor_callees: Vec<(ModuleName, ConstructorCallees)>,
     /// Class FQN -> property field names, for resolving candidates recorded by
     /// libraries that could not see the class.
@@ -200,6 +202,7 @@ fn run_local_pipeline(
         exports,
         side_effect_imports: output.side_effect_imports,
         class_bases: output.class_bases,
+        class_metaclasses: output.class_metaclasses,
         constructor_callees: output.constructor_callees,
         class_properties: output.class_properties,
     })
@@ -239,6 +242,7 @@ pub fn analyze_library(
         exports,
         side_effect_imports,
         class_bases,
+        class_metaclasses,
         constructor_callees,
         class_properties,
     } = run_local_pipeline(src_map, root_dir, ExecutionMode::Incremental, options, None)?;
@@ -248,6 +252,7 @@ pub fn analyze_library(
         exports,
         side_effect_imports,
         class_bases,
+        class_metaclasses,
         constructor_callees,
         class_properties,
     })
@@ -267,6 +272,7 @@ pub fn process_source_map(
         exports,
         side_effect_imports,
         class_bases: _,
+        class_metaclasses: _,
         constructor_callees: _,
         class_properties: _,
     } = result;

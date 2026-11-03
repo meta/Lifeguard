@@ -93,6 +93,12 @@ pub fn run_analysis(
             },
         )
     });
+    let class_metaclasses: Vec<(ModuleName, ModuleName)> = info
+        .classes
+        .metaclass_edges()
+        .into_iter()
+        .filter(|(class, _)| owned(class))
+        .collect();
     let constructor_callees = time("  Resolving constructor callees", || {
         let mut resolved = info.resolved_constructor_callees();
         resolved.retain(|(class, _)| owned(class));
@@ -108,6 +114,7 @@ pub fn run_analysis(
         side_effect_imports,
         parse_errors,
         class_bases,
+        class_metaclasses,
         constructor_callees,
         class_properties,
     }

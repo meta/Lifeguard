@@ -24,6 +24,7 @@ mod builder;
 mod call_graph;
 mod calls;
 mod dispatch;
+pub(crate) use dispatch::METACLASS_CREATION_METHODS;
 mod implicit_imports;
 mod info;
 mod mutations;

@@ -81,6 +81,9 @@ pub struct LibraryCache {
     /// `Class.method` calls.
     #[serde(default)]
     pub class_bases: Vec<(ModuleName, Vec<ModuleName>)>,
+    /// Class FQN -> declared metaclass FQN, for reduce-time resolution of class
+    /// creations whose bases another library defines.
+    pub class_metaclasses: Vec<(ModuleName, ModuleName)>,
     /// Class FQN -> property field names, for resolving property candidates
     /// against classes the recording library could not see.
     #[serde(default)]
@@ -413,9 +416,11 @@ impl LibraryCache {
     pub fn set_class_facts(
         &mut self,
         class_bases: Vec<(ModuleName, Vec<ModuleName>)>,
+        class_metaclasses: Vec<(ModuleName, ModuleName)>,
         class_properties: Vec<(ModuleName, Vec<String>)>,
     ) {
         self.class_bases = class_bases;
+        self.class_metaclasses = class_metaclasses;
         self.class_properties = class_properties;
     }
 

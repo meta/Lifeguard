@@ -1039,6 +1039,59 @@ class Visitor:
         }
     }
 
+    /// Subclassing, in another library, a base whose metaclass registers each
+    /// class it creates.
+    #[test]
+    fn subclass_of_a_registering_metaclass_base_agrees() {
+        let base = r#"
+REGISTRY = {}
+
+
+class Meta(type):
+    def __new__(mcs, name, bases, namespace):
+        cls = super().__new__(mcs, name, bases, namespace)
+        REGISTRY[name] = cls
+        return cls
+
+
+class Base(metaclass=Meta):
+    pass
+"#;
+        let user = r#"
+from base import Base
+
+
+class Child(Base):
+    pass
+"#;
+        let modules = vec![("base", base), ("user", user)];
+        assert_paths_agree_sharded(&modules);
+    }
+
+    /// Subclassing, in another library, a base whose `__init_subclass__` registers
+    /// each subclass.
+    #[test]
+    fn subclass_of_a_registering_init_subclass_base_agrees() {
+        let base = r#"
+REGISTRY = []
+
+
+class Base:
+    def __init_subclass__(cls, **kwargs):
+        super().__init_subclass__(**kwargs)
+        REGISTRY.append(cls)
+"#;
+        let user = r#"
+from base import Base
+
+
+class Child(Base):
+    pass
+"#;
+        let modules = vec![("base", base), ("user", user)];
+        assert_paths_agree_sharded(&modules);
+    }
+
     fn entry_as_main_options() -> Options {
         Options {
             main_module: Some(ModuleName::from_str("entry")),
