@@ -138,6 +138,17 @@ impl Graph {
         &self.graph[NodeIndex::new(ix as usize)]
     }
 
+    pub(crate) fn node_count(&self) -> usize {
+        self.graph.node_count()
+    }
+
+    /// As [`Self::neighbors`], by index.
+    pub(crate) fn neighbors_at(&self, ix: u32) -> impl Iterator<Item = u32> + '_ {
+        self.graph
+            .neighbors(NodeIndex::new(ix as usize))
+            .map(|n| n.index() as u32)
+    }
+
     /// Get an iterator over all the reverse neighbors of a node, i.e. all nodes that point back to
     /// it.
     pub fn reverse_neighbors(&self, node: &ModuleName) -> impl Iterator<Item = &ModuleName> {

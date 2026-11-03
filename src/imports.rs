@@ -268,18 +268,32 @@ impl ImportGraph {
     /// packages are not nodes, and the importer's own ancestors ran already. A parent may also be
     /// a direct import.
     pub fn implicit_parent_imports(&self) -> AHashMap<ModuleName, Vec<ModuleName>> {
-        self.modules_par_iter()
-            .filter_map(|from| {
+        let graph = &self.graph;
+        let node_count = graph.node_count() as u32;
+        // Each node's ancestors, interned once rather than once per incoming edge.
+        let ancestors: Vec<Vec<(ModuleName, bool)>> = (0..node_count)
+            .into_par_iter()
+            .map(|ix| {
+                graph
+                    .name_at(ix)
+                    .iter_parents()
+                    .map(|(parent, _)| (parent, self.contains(&parent)))
+                    .collect()
+            })
+            .collect();
+        (0..node_count)
+            .into_par_iter()
+            .filter_map(|ix| {
+                let from = graph.name_at(ix);
                 let mut seen = AHashSet::new();
                 let mut parents = Vec::new();
-                for target in self.get_imports(from) {
-                    for (parent, _) in target.iter_parents() {
+                for target in graph.neighbors_at(ix) {
+                    for &(parent, is_node) in &ancestors[target as usize] {
                         // A parent seen before was seen along with all of its ancestors.
                         if !seen.insert(parent) {
                             break;
                         }
-                        if self.contains(&parent) && parent != *from && !parent.is_ancestor_of(from)
-                        {
+                        if is_node && parent != *from && !parent.is_ancestor_of(from) {
                             parents.push(parent);
                         }
                     }
