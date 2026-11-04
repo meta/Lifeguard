@@ -180,6 +180,7 @@ call-site handling for the returned wrapper's effects.
    - `ImportedVarMutation` at module scope → `ImportedModuleAssignment` error
    - `ImportedTypeAttr` → checked for property access, treated as a call
    - Imported arguments matched by immutable `project/mutations.rs` queries to directly or transitively mutated parameters → `ImportedVarArgument` error via `project/calls.rs::check_call_params`
+   - Inside a function, a module-level variable passed to a (transitively) mutated parameter counts as an imported argument: the call mutates the module, so the function is unsafe. Module-level `def`/`class` names are not counted (passed along, they are callbacks)
    - Effects with `requires_eager_loading_imports()` → added to `force_imports_eager_overrides`
    - A module whose companion `.pyi` declares public names, none of which its source binds → `NamesOnlyInStub`, added to `force_imports_eager_overrides` only; it is recorded by the analyzer rather than as an effect
 
@@ -189,7 +190,7 @@ Many effect kinds exist only for call graph traversal or state tracking:
 
 - `FunctionCall`, `ImportedFunctionCall`, `MethodCall`, `UnboundMethodCall`, `DecoratorCall`, `ImportedDecoratorCall` — checked through call resolution and body analysis; unresolved or unsafe callees can produce errors
 - `GlobalVarAssign`, `GlobalVarMutation` — only become errors in cross-module calls (`UnsafeIfImported`)
-- `ParamMethodCall` — seeds parameter-mutation tracking; calls are flagged when imported arguments reach the affected parameters
+- `ParamMethodCall` — seeds parameter-mutation tracking; calls are flagged when imported (or, inside a function, module-level) arguments reach the affected parameters
 - `ClassVarAssign`, `SetAttr`, `SetSubscript` — tracked as effects but not directly converted to errors
 - `NoEffects`, `Mutation`, `Dunder` — stub-only markers, never directly become errors
 

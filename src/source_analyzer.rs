@@ -10,6 +10,7 @@ use std::cell::RefCell;
 
 use pyrefly_python::dunder;
 use pyrefly_python::module_name::ModuleName;
+use pyrefly_python::symbol_kind::SymbolKind;
 use pyrefly_util::visit::Visit;
 use ruff_python_ast::Arguments;
 use ruff_python_ast::CmpOp;
@@ -91,6 +92,8 @@ use crate::traits::ModuleNameExt;
 enum ArgClass {
     /// The argument resolves to an imported variable.
     Imported,
+    /// The argument resolves to a module-level variable referenced from a nested scope.
+    ModuleGlobal,
     /// The argument forwards one of the enclosing function's parameters (by name).
     ForwardedParam(ModuleName),
     /// Neither imported nor a forwarded parameter.
@@ -110,7 +113,7 @@ struct CallDataBuilder {
 impl CallDataBuilder {
     fn record_positional(&mut self, index: usize, is_starred: bool, class: ArgClass) {
         match class {
-            ArgClass::Imported => {
+            ArgClass::Imported | ArgClass::ModuleGlobal => {
                 self.has_unsafe = true;
                 if is_starred {
                     // An imported value unpacked through `*args` can reach every positional slot
@@ -140,7 +143,7 @@ impl CallDataBuilder {
 
     fn record_keyword(&mut self, name: Option<&Identifier>, class: ArgClass) {
         match class {
-            ArgClass::Imported => {
+            ArgClass::Imported | ArgClass::ModuleGlobal => {
                 self.has_unsafe = true;
                 match name {
                     Some(name) => self
@@ -642,7 +645,7 @@ impl<'a> SourceAnalyzer<'a> {
         self.add_effect(eff, output);
     }
 
-    /// Classify a single call argument as imported/forwarded/neither
+    /// Classify a single call argument as imported/module-global/forwarded/other
     fn classify_call_arg(&self, arg: &Expr, output: &mut ModuleEffects) -> ArgClass {
         if self.is_sys_modules_access(arg) {
             self.add_sys_modules_access(arg.range(), output);
@@ -655,6 +658,21 @@ impl<'a> SourceAnalyzer<'a> {
             let eff = Effect::new(EffectKind::ImportedVarArgument, name, arg.range());
             self.add_effect(eff, output);
             return ArgClass::Imported;
+        }
+        // Passing module state into a callee that mutates the parameter mutates the module.
+        // A module-level `def` or `class` passed along is almost always a callback.
+        let is_def = matches!(
+            res.definition.style,
+            DefinitionStyle::Unannotated(
+                SymbolKind::Function | SymbolKind::Method | SymbolKind::Class
+            )
+        );
+        if !is_def
+            && (res.is_global()
+                || (res.scope == self.info.module_name
+                    && self.cursor.scope() != self.info.module_name))
+        {
+            return ArgClass::ModuleGlobal;
         }
         // A reference to one of the current function's parameters, directly or
         // through a local alias (`y = x; g(y)` forwards `x`).

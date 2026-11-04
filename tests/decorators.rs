@@ -331,6 +331,83 @@ def decorated():
         check_all(vec![("foo", foo), ("__main__", __main__)]);
     }
 
+    /// The factory hands its own module's registry to a helper whose returned
+    /// decorator stores into it, so applying the decorator mutates that registry.
+    #[test]
+    fn test_factory_decorator_registers_into_its_own_global() {
+        let foo = r#"
+REGISTRY = {}
+
+def _register(registry, key):
+    def decorate(fn):
+        registry[key] = fn
+        return fn
+    return decorate
+
+def reader(key):
+    return _register(REGISTRY, key)
+"#;
+        let __main__ = r#"
+from foo import reader
+
+@reader("x")  # E: unsafe-decorator-call
+def read():
+    ...
+"#;
+        check_all(vec![("foo", foo), ("__main__", __main__)]);
+    }
+
+    /// A function that hands its module's registry to a helper that stores into it
+    /// mutates the registry whenever it is called.
+    #[test]
+    fn test_global_passed_to_mutating_helper() {
+        let foo = r#"
+REGISTRY = {}
+
+def _store(registry, key, fn):
+    registry[key] = fn
+
+def _lookup(registry, key):
+    return registry.get(key)
+
+def register(key, fn):
+    _store(REGISTRY, key, fn)
+
+def lookup(key):
+    return _lookup(REGISTRY, key)
+
+_store(REGISTRY, "builtin", None)
+"#;
+        let __main__ = r#"
+from foo import lookup, register
+
+register("x", 1)  # E: unsafe-function-call
+lookup("x")
+"#;
+        check_all(vec![("foo", foo), ("__main__", __main__)]);
+    }
+
+    /// A module-level function handed to a callee is a callback, not module state.
+    #[test]
+    fn test_module_function_passed_to_mutating_callee_stays_safe() {
+        let foo = r#"
+def _store(registry, key):
+    registry.key = key
+
+def _callback():
+    ...
+
+def register():
+    _store(_callback, "x")
+"#;
+        let __main__ = r#"
+from foo import register
+
+register()
+"#;
+        check_all(vec![("foo", foo), ("__main__", __main__)]);
+    }
+
     #[test]
     fn test_decorator_argument_safety_controls() {
         let code = r#"
