@@ -244,6 +244,16 @@ mod tests {
     }
 
     #[test]
+    fn neighbors_preserve_input_order_and_multiplicity() {
+        let g = CsrGraph::from_edges(4, &[(0, 2), (1, 2), (0, 1), (2, 2), (0, 2)]);
+        assert_eq!(g.num_nodes(), 4);
+        assert_eq!(g.neighbors(0), &[2, 1, 2]);
+        assert_eq!(g.neighbors(1), &[2]);
+        assert_eq!(g.neighbors(2), &[2]);
+        assert_eq!(g.neighbors(3), &[] as &[u32]);
+    }
+
+    #[test]
     fn self_loop_is_a_cycle() {
         // Unlike a self-import in `graph::Graph`, recursion is a cycle here.
         let in_cycle = CsrGraph::from_edges(3, &[(0, 1), (1, 1)]).nodes_in_cycles();
