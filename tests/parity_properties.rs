@@ -27,11 +27,11 @@ mod tests {
     use lifeguard::test_lib::verbose_test_options;
 
     /// A program with enough cross-module structure that a partition can cut
-    /// through call chains, re-exports, class hierarchies and import cycles.
-    /// Deliberately avoids the two constructs known to diverge across shards
-    /// (star imports and two-hop parameter forwarding); those are tracked as
-    /// known gaps in `parity.rs`, and including them here would just reproduce
-    /// them in every property.
+    /// through call chains, re-exports, class hierarchies, import cycles and
+    /// multi-hop parameter forwarding.
+    ///
+    /// Still avoids star imports, which remain a known gap in `parity.rs`;
+    /// including them here would just reproduce that gap in every property.
     fn corpus() -> Vec<(&'static str, &'static str)> {
         let leaf_safe = r#"
             def helper():
@@ -85,6 +85,31 @@ mod tests {
         let uses_exec = r#"
             exec('generated = 1')
         "#;
+        // A forwarding chain, so a partition can cut between any two hops. Its
+        // records are the only ones a random partition can place in separate
+        // libraries, which is what puts them through the wire format.
+        let sink_lib = r#"
+            def sink(x):
+                x.attr = 1
+        "#;
+        let forward_lib = r#"
+            from sink_lib import sink
+
+            def forward(y):
+                sink(y)
+        "#;
+        let relay_lib = r#"
+            from forward_lib import forward
+
+            def relay(z):
+                forward(z)
+        "#;
+        let forwards_imported = r#"
+            import leaf_safe
+            from relay_lib import relay
+
+            relay(leaf_safe)
+        "#;
         let pkg_parent = r#"
             PARENT = 1
         "#;
@@ -107,6 +132,10 @@ mod tests {
             ("base_class", base_class),
             ("derived_class", derived_class),
             ("uses_class", uses_class),
+            ("sink_lib", sink_lib),
+            ("forward_lib", forward_lib),
+            ("relay_lib", relay_lib),
+            ("forwards_imported", forwards_imported),
             ("cycle_one", cycle_one),
             ("cycle_two", cycle_two),
             ("has_finalizer", has_finalizer),

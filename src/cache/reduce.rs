@@ -780,6 +780,9 @@ impl LibraryCache {
             self.modules
                 .iter()
                 .map(|module| (module.name, module.mutation_candidates.as_slice())),
+            self.modules
+                .iter()
+                .map(|module| (module.name, module.forwarded_params.as_slice())),
             needed_unqualified,
             NameSearch::ProbeStr,
             |module_name, metadata, range| {

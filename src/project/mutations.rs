@@ -303,7 +303,7 @@ impl ProjectInfo {
                             if !local_callee && !callee_is_unresolved(&callee, missing, ambiguous) {
                                 continue;
                             }
-                            if wants_candidate && !local_callee {
+                            if wants_candidate {
                                 candidates.push((
                                     module,
                                     mutation_candidate(

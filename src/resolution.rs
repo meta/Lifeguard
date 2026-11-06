@@ -10,15 +10,19 @@ use rayon::prelude::*;
 use ruff_text_size::TextRange;
 
 use crate::cache::CONSTRUCTOR_METHODS;
+use crate::effects::ArgSlot;
 use crate::effects::ImportedArgs;
+use crate::effects::MAX_ARGS;
 use crate::errors::ErrorKind;
 use crate::errors::SafetyError;
 use crate::hasher::AHashMap;
 use crate::hasher::AHashSet;
 use crate::hasher::HashSetExt;
 use crate::hasher::union_larger;
+use crate::module_safety::ForwardedParam;
 use crate::module_safety::FunctionSafety;
 use crate::module_safety::FunctionSafetyInfo;
+use crate::module_safety::MutatedParam;
 use crate::module_safety::MutationCandidate;
 use crate::module_safety::MutationCandidateSite;
 use crate::module_safety::SubclassCandidate;
@@ -141,10 +145,14 @@ pub(crate) fn resolve_program<'a>(
     module_names: &AHashSet<ModuleName>,
     function_safety: &mut AHashMap<ModuleName, AHashMap<String, FunctionSafetyInfo>>,
     candidates: impl Iterator<Item = (ModuleName, &'a [MutationCandidate])>,
+    forwarded: impl Iterator<Item = (ModuleName, &'a [ForwardedParam])>,
     mut needed_unqualified: AHashSet<String>,
     search: NameSearch,
     mut module_scope_error: impl FnMut(ModuleName, String, TextRange),
 ) -> ResolutionOutcome {
+    // Before the candidates: a confirmed forwarding is what makes an
+    // intermediate function a mutator, and candidates read that as frozen.
+    propagate_forwarded_params(forwarded, module_names, function_safety);
     apply_mutation_candidates(
         candidates,
         module_names,
@@ -241,6 +249,128 @@ impl<'a> ModuleView<'a> {
     fn lookup_callee(&self, name: &str) -> Option<&'a FunctionSafetyInfo> {
         let split = self.split(name)?;
         split.verdicts?.get(split.local)
+    }
+}
+
+/// The argument slots a forwarded parameter occupies, expressed as the matcher
+/// the imported-argument path already uses. A parameter reaches one slot, except
+/// a `*param` expansion, which reaches every positional slot from its own
+/// position onward.
+fn slot_as_args(slot: &ArgSlot) -> ImportedArgs {
+    let mut args = ImportedArgs::default();
+    match slot {
+        // Past the bitset there is no exact slot left to name, so fall back to
+        // the same lower-bound match an expansion uses.
+        ArgSlot::Positional(idx) if *idx < MAX_ARGS => args.unsafe_arg_indices = 1u64 << idx,
+        ArgSlot::Positional(idx) => args.unsafe_args_expansion_min = Some(*idx),
+        ArgSlot::Keyword(name) => args.unsafe_keyword_names = vec![*name],
+        ArgSlot::StarExpansion(start) => args.unsafe_args_expansion_min = Some(*start),
+    }
+    args
+}
+
+/// What a forwarding record can still contribute.
+#[derive(PartialEq)]
+enum Forwarding {
+    /// The callee mutates the slot, so the forwarding function mutates its own
+    /// parameter too.
+    Mutates,
+    /// The callee is known but does not mutate the slot yet. A later pass may
+    /// extend it.
+    Pending,
+    /// No merged module defines the callee, so nothing will ever extend it and
+    /// no later pass can change this answer.
+    Unresolvable,
+}
+
+/// Whether the callee mutates the parameter the forwarding lands in, and if not,
+/// whether anything could still change that.
+fn classify_forwarding(
+    forwarded: &ForwardedParam,
+    view: &ModuleView<'_>,
+    buf: &mut String,
+) -> Forwarding {
+    let slot = slot_as_args(&forwarded.slot);
+    let (mutates, resolved_any) =
+        mutated_arg_reaches(&forwarded.callee, forwarded.arg_offset, &slot, view, buf);
+    if mutates {
+        Forwarding::Mutates
+    } else if resolved_any {
+        Forwarding::Pending
+    } else {
+        Forwarding::Unresolvable
+    }
+}
+
+/// Record that `forwarded.function` mutates the parameter it forwards, returning
+/// whether that was news.
+fn record_mutated_param(
+    module: ModuleName,
+    forwarded: &ForwardedParam,
+    function_safety: &mut AHashMap<ModuleName, AHashMap<String, FunctionSafetyInfo>>,
+) -> bool {
+    // A function with a forwarding call but no verdict of its own is safe on its
+    // own account; what it forwards is still its caller's problem.
+    let info = function_safety
+        .entry(module)
+        .or_default()
+        .entry(forwarded.function.as_str().to_owned())
+        .or_insert_with(|| FunctionSafetyInfo::new(FunctionSafety::Safe));
+    if info
+        .mutated_params
+        .iter()
+        .any(|param| param.name == forwarded.param)
+    {
+        return false;
+    }
+    info.mutated_params.push(MutatedParam {
+        name: forwarded.param,
+        position: forwarded.position,
+    });
+    true
+}
+
+/// Finish the parameter-forwarding fixpoint `compute_mutated_params` leaves
+/// open: matching a positional slot needs a signature another library holds.
+fn propagate_forwarded_params<'a>(
+    modules: impl Iterator<Item = (ModuleName, &'a [ForwardedParam])>,
+    module_names: &AHashSet<ModuleName>,
+    function_safety: &mut AHashMap<ModuleName, AHashMap<String, FunctionSafetyInfo>>,
+) {
+    let mut pending: Vec<(ModuleName, &ForwardedParam)> = modules
+        .flat_map(|(module, forwarded)| forwarded.iter().map(move |f| (module, f)))
+        .collect();
+
+    while !pending.is_empty() {
+        // Classified against one frozen state, then applied, so the outcome does
+        // not depend on the order the records arrive in.
+        let verdicts: Vec<Forwarding> = {
+            let view = ModuleView::new(module_names, function_safety);
+            pending
+                .par_iter()
+                .map_init(String::new, |buf, (_, f)| {
+                    classify_forwarding(f, &view, buf)
+                })
+                .collect()
+        };
+
+        let mut changed = false;
+        for (&(module, f), verdict) in pending.iter().zip(&verdicts) {
+            if matches!(verdict, Forwarding::Mutates) {
+                changed |= record_mutated_param(module, f, function_safety);
+            }
+        }
+        if !changed {
+            return;
+        }
+
+        // Dropping the unresolvable ones is what makes the loop affordable: most
+        // callees here are names no merged module defines, re-probed every pass.
+        pending = pending
+            .into_iter()
+            .zip(verdicts)
+            .filter_map(|(entry, verdict)| matches!(verdict, Forwarding::Pending).then_some(entry))
+            .collect();
     }
 }
 
@@ -352,25 +482,30 @@ fn apply_mutation_candidates<'a>(
 }
 
 /// Whether any argument position in `args` reaches a parameter that `callee`
-/// mutates.
+/// mutates, and whether any of the names probed resolved at all.
+///
+/// A caller that only confirms a mutation wants the first; one that must tell
+/// "resolved and safe" from "did not resolve" needs the second.
 fn mutated_arg_reaches(
     callee: &ModuleName,
     arg_offset: usize,
     args: &ImportedArgs,
     view: &ModuleView<'_>,
     buf: &mut String,
-) -> bool {
+) -> (bool, bool) {
     let name = callee.as_str();
     let own = view.split(name);
     let as_module = view.get(name);
     if own.is_none() && as_module.is_none() {
-        return false;
+        return (false, false);
     }
 
-    let hit = |info: Option<&FunctionSafetyInfo>, arg_offset: usize| {
+    let mut resolved_any = false;
+    let mut hit = |info: Option<&FunctionSafetyInfo>, arg_offset: usize| {
         let Some(info) = info else {
             return false;
         };
+        resolved_any = true;
         args.hits_any_param(
             info.mutated_params
                 .iter()
@@ -385,7 +520,7 @@ fn mutated_arg_reaches(
             arg_offset,
         )
     {
-        return true;
+        return (true, true);
     }
 
     // Probe the constructor methods as well as the callee.
@@ -407,10 +542,10 @@ fn mutated_arg_reaches(
             ctor_map.and_then(|fns| fns.get(buf.as_str())),
             arg_offset + 1,
         ) {
-            return true;
+            return (true, true);
         }
     }
-    false
+    (false, resolved_any)
 }
 
 /// Whether a candidate feeds imported state into a parameter its callee mutates.
@@ -426,6 +561,7 @@ fn candidate_mutates(
         view,
         buf,
     )
+    .0
 }
 
 /// Whether a callee resolves to a verdict that must continue blocking its caller.
@@ -769,6 +905,7 @@ mod tests {
             &module_names,
             &mut function_safety,
             std::iter::once((caller, std::slice::from_ref(&candidate))),
+            std::iter::empty(),
             AHashSet::new(),
             NameSearch::ProbeStr,
             |module, metadata, _range| errors.push((module, metadata)),
@@ -871,6 +1008,7 @@ mod tests {
                 &module_names,
                 &mut function_safety,
                 modules.into_iter(),
+                std::iter::empty(),
                 AHashSet::new(),
                 NameSearch::ProbeStr,
                 |_, _, _| {},

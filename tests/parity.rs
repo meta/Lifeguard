@@ -218,9 +218,12 @@ mod tests {
         ]);
     }
 
-    /// KNOWN GAP (T288043641) -- cross-library parameter forwarding.
     #[test]
-    fn two_hop_cross_library_forwarding_is_a_known_gap() {
+    fn two_hop_cross_library_forwarding_agrees() {
+        // `app` passes an imported module to `midlib.forward`, which forwards it
+        // again to `sinklib.sink`, which mutates it. Neither hop can see the
+        // next one's library, so the reduce has to complete the forwarding
+        // fixpoint that `compute_mutated_params` runs within a library.
         let other = r#"
             VALUE = 1
         "#;
@@ -240,38 +243,51 @@ mod tests {
 
             forward(other)
         "#;
-        let differences = path_differences(
-            &[
-                ("other", other),
-                ("sinklib", sinklib),
-                ("midlib", midlib),
-                ("app", app),
-            ],
-            &[1, 2, 3],
-        );
+        assert_paths_agree_sharded(&[
+            ("other", other),
+            ("sinklib", sinklib),
+            ("midlib", midlib),
+            ("app", app),
+        ]);
+    }
 
-        let diverging: Vec<usize> = differences.iter().map(|(count, _)| *count).collect();
-        assert_eq!(
-            diverging,
-            vec![2, 3],
-            "one shard keeps every module in one library, so the gap needs a split to appear",
-        );
-        for (count, difference) in &differences {
-            assert!(
-                difference.starts_with("passing modules:"),
-                "{count} shards: expected a passing-module difference, got: {difference}",
-            );
-            // Located by content and relative position rather than by matching
-            // the rendered label, so that reformatting the message cannot turn
-            // this into an assertion that quietly checks nothing.
-            let whole_program = difference.find(r#"["midlib", "other", "sinklib"]"#);
-            let incremental = difference.find(r#"["app", "midlib", "other", "sinklib"]"#);
-            assert!(
-                matches!((whole_program, incremental), (Some(w), Some(i)) if w < i),
-                "{count} shards: expected whole-program to fail `app` and incremental to pass it \
-                 (a false-safe), got: {difference}",
-            );
-        }
+    #[test]
+    fn three_hop_cross_library_forwarding_agrees() {
+        // Three hops, so the reduce cannot settle this in one pass: confirming
+        // `relay` needs `forward` already known to mutate, which needs `sink`.
+        // Each library sees exactly one hop.
+        let other = r#"
+            VALUE = 1
+        "#;
+        let sinklib = r#"
+            def sink(x):
+                x.attr = 1
+        "#;
+        let midlib = r#"
+            from sinklib import sink
+
+            def forward(y):
+                sink(y)
+        "#;
+        let relaylib = r#"
+            from midlib import forward
+
+            def relay(z):
+                forward(z)
+        "#;
+        let app = r#"
+            import other
+            from relaylib import relay
+
+            relay(other)
+        "#;
+        assert_paths_agree_sharded(&[
+            ("other", other),
+            ("sinklib", sinklib),
+            ("midlib", midlib),
+            ("relaylib", relaylib),
+            ("app", app),
+        ]);
     }
 
     #[test]

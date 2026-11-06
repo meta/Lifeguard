@@ -145,6 +145,9 @@ impl ProjectInfo {
             candidates
                 .iter()
                 .map(|(module, candidates)| (*module, candidates.as_slice())),
+            // None recorded: whole-program sees every callee's signature, so
+            // `compute_mutated_params` already took every forwarding hop.
+            std::iter::empty(),
             AHashSet::new(),
             NameSearch::Intern,
             // Never reached, which is why the index handed to promotion above can
