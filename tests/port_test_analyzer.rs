@@ -97,7 +97,7 @@ mod tests {
         // os.chdir is an unsafe side-effect
         let __main__ = r#"
             import os
-            os.chroot("/home/") # E: unsafe-function-call
+            os.chroot("/home/") # E: unsafe-function-call # E: chroot-call
        "#;
         check_all(vec![("__main__", __main__)])
     }

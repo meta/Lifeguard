@@ -52,6 +52,8 @@ struct ClassifiedModules {
     load_imports_eagerly: SmallSet<ModuleName>,
     implicit_imports: AHashMap<ModuleName, Vec<ModuleName>>,
     aggregated_errors: AHashMap<(ErrorKind, ErrorMetadata), usize>,
+    /// Some module calls `os.chroot`, so the program must not defer any import.
+    enters_chroot: bool,
 }
 
 /// The source and cached representations intentionally use the same classification rules:
@@ -131,6 +133,9 @@ impl ClassifiedModules {
 
     fn record_errors(&mut self, errors: impl IntoIterator<Item = (ErrorKind, ErrorMetadata)>) {
         for error in errors.into_iter().collect::<AHashSet<_>>() {
+            if error.0 == ErrorKind::ChrootCall {
+                self.enters_chroot = true;
+            }
             *self.aggregated_errors.entry(error).or_insert(0) += 1;
         }
     }
@@ -604,6 +609,7 @@ impl LifeGuardAnalysis {
             re_exports,
             side_effects,
         } = program;
+        let enters_chroot = classified.enters_chroot;
         let source_modules: AHashSet<ModuleName> = classified
             .passing_modules
             .iter()
@@ -663,6 +669,9 @@ impl LifeGuardAnalysis {
         match side_effects {
             SideEffects::Whole(imports) => analysis.propagate_side_effect_imports(imports),
             SideEffects::Cached(modules) => analysis.propagate_cached_side_effect_imports(modules),
+        }
+        if enters_chroot {
+            analysis.output.lazy_eligible.clear();
         }
         analysis
     }
@@ -993,6 +1002,7 @@ mod tests {
             load_imports_eagerly: SmallSet::new(),
             implicit_imports: AHashMap::new(),
             aggregated_errors: AHashMap::new(),
+            enters_chroot: false,
         };
         for m in ["consumer", "a", "b", "leaf"] {
             classified.passing_modules.insert(mn(m));
@@ -1034,6 +1044,7 @@ mod tests {
             load_imports_eagerly: SmallSet::new(),
             implicit_imports: AHashMap::new(),
             aggregated_errors: AHashMap::new(),
+            enters_chroot: false,
         };
         for m in ["consumer", "route", "leaf"] {
             classified.passing_modules.insert(mn(m));
@@ -1079,6 +1090,7 @@ mod tests {
             load_imports_eagerly: SmallSet::new(),
             implicit_imports: AHashMap::new(),
             aggregated_errors: AHashMap::new(),
+            enters_chroot: false,
         };
         classified.passing_modules.insert(mn("safe"));
         classified.failing_modules.insert(mn("unsafe_mod"));
@@ -1118,6 +1130,7 @@ mod tests {
             load_imports_eagerly: SmallSet::new(),
             implicit_imports: AHashMap::new(),
             aggregated_errors: AHashMap::new(),
+            enters_chroot: false,
         };
         classified.passing_modules.insert(a);
         classified.passing_modules.insert(b);
@@ -1160,6 +1173,7 @@ mod tests {
             load_imports_eagerly: SmallSet::new(),
             implicit_imports: AHashMap::new(),
             aggregated_errors: AHashMap::new(),
+            enters_chroot: false,
         };
         classified.passing_modules.insert(a);
 

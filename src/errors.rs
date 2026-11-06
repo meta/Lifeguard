@@ -119,6 +119,10 @@ pub enum ErrorKind {
     /// A module-scope class inherits from a base whose `__subclasses__()` some module walks,
     /// so the registry built from that walk is missing it until this module runs.
     SubclassRegistration,
+
+    /// `os.chroot()` is called. The program's own files are outside the new root, so any import
+    /// still deferred when it runs cannot load: nothing in the program may defer.
+    ChrootCall,
 }
 
 impl ErrorKind {
@@ -132,6 +136,7 @@ impl ErrorKind {
                 | Self::SubclassesAccess
                 | Self::BuiltinsImportOverride
                 | Self::NamesOnlyInStub
+                | Self::ChrootCall
         )
     }
 
@@ -258,6 +263,7 @@ impl SafetyError {
             EffectKind::SysModulesAccess => Some(ErrorKind::SysModulesAccess),
             EffectKind::SubclassesAccess => Some(ErrorKind::SubclassesAccess),
             EffectKind::BuiltinsImportOverride => Some(ErrorKind::BuiltinsImportOverride),
+            EffectKind::ChrootCall => Some(ErrorKind::ChrootCall),
             EffectKind::UnknownDecoratorCall => Some(ErrorKind::UnknownDecoratorCall),
             EffectKind::UnknownEffects => Some(ErrorKind::UnknownEffects),
             EffectKind::UnknownObject => Some(ErrorKind::UnknownObject),
@@ -424,6 +430,7 @@ mod tests {
             EffectKind::SysModulesAccess,
             EffectKind::SubclassesAccess,
             EffectKind::BuiltinsImportOverride,
+            EffectKind::ChrootCall,
         ] {
             assert!(
                 SafetyError::error_kind_for(kind)

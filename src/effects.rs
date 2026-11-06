@@ -93,6 +93,8 @@ pub enum EffectKind {
     SubclassesAccess,
     // Replacing or deleting `builtins.__import__`.
     BuiltinsImportOverride,
+    // Calling `os.chroot()`.
+    ChrootCall,
     // Passing an imported variable as a function argument.
     ImportedVarArgument,
     // Re-assigning an imported variable (for re-export tracking).

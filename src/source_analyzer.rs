@@ -866,6 +866,10 @@ impl<'a> SourceAnalyzer<'a> {
             return;
         };
 
+        if matches!(fname.as_str(), "os.chroot" | "posix.chroot") {
+            self.add_effect(Effect::new(EffectKind::ChrootCall, fname, range), output);
+        }
+
         output.called_functions.insert(fname);
         let data = call_data.into_effect_data();
 
