@@ -32,6 +32,7 @@ use crate::project::calls::Call;
 use crate::project::calls::CallStack;
 use crate::project::info::ProjectInfo;
 use crate::project::info::resolve_enclosing_module;
+use crate::project::mutations::CollectForwarding;
 use crate::project::state::GlobalAnalysisState;
 use crate::project::types::ExecutionMode;
 use crate::project::types::SafetyMap;
@@ -105,7 +106,9 @@ impl ProjectInfo {
 
         let module_names: AHashSet<ModuleName> = self.analysis_map.keys().copied().collect();
 
-        let candidates = self.collect_mutation_candidates(import_graph);
+        let candidates = self
+            .collect_cross_library_facts(import_graph, CollectForwarding::No)
+            .candidates;
 
         // Functions whose verdict the resolution may change: mutation-candidate call
         // sites plus everything the promotion fixpoint promotes. Only these are

@@ -29,6 +29,7 @@ use crate::project::implicit_imports::compute_implicit_imports;
 use crate::project::implicit_imports::compute_side_effect_imports;
 use crate::project::info::ProjectInfo;
 use crate::project::info::resolve_enclosing_module;
+use crate::project::mutations::CollectForwarding;
 use crate::project::state::GlobalAnalysisState;
 use crate::project::types::AnalysisMap;
 use crate::project::types::AnalysisOutput;
@@ -280,10 +281,18 @@ impl ProjectInfo {
             self.apply_subclass_registrations(&safety_map, import_graph);
         }
         if mode == ExecutionMode::Incremental {
-            for (module, candidates) in self.collect_mutation_candidates(import_graph) {
+            let facts = self.collect_cross_library_facts(import_graph, CollectForwarding::Yes);
+            for (module, candidates) in facts.candidates {
                 if let Some(mut entry) = safety_map.get_mut(&module) {
                     if let SafetyResult::Ok(ms) = entry.value_mut() {
                         ms.mutation_candidates = candidates;
+                    }
+                }
+            }
+            for (module, forwarded) in facts.forwarded_params {
+                if let Some(mut entry) = safety_map.get_mut(&module) {
+                    if let SafetyResult::Ok(ms) = entry.value_mut() {
+                        ms.forwarded_params = forwarded;
                     }
                 }
             }

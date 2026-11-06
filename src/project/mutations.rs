@@ -22,6 +22,7 @@ use crate::hasher::AHashMap;
 use crate::hasher::AHashSet;
 use crate::hasher::HashMapExt;
 use crate::imports::ImportGraph;
+use crate::module_safety::ForwardedParam;
 use crate::module_safety::MutatedParam;
 use crate::module_safety::MutationCandidate;
 use crate::module_safety::MutationCandidateSite;
@@ -31,6 +32,28 @@ use crate::project::info::ProjectInfo;
 use crate::project::info::resolve_enclosing_module;
 use crate::project::types::AnalysisMap;
 use crate::traits::ModuleNameExt;
+
+/// Whether a collection pass needs the parameter-forwarding records. Only the
+/// incremental path does: whole-program resolves every forwarding locally.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(super) enum CollectForwarding {
+    Yes,
+    No,
+}
+
+/// What one pass over the effects found for callees this library cannot resolve.
+pub(super) struct CrossLibraryFacts {
+    pub(super) candidates: AHashMap<ModuleName, Vec<MutationCandidate>>,
+    pub(super) forwarded_params: AHashMap<ModuleName, Vec<ForwardedParam>>,
+}
+
+fn group_by_module<T>(flat: Vec<(ModuleName, T)>) -> AHashMap<ModuleName, Vec<T>> {
+    let mut result: AHashMap<ModuleName, Vec<T>> = AHashMap::new();
+    for (module, item) in flat {
+        result.entry(module).or_default().push(item);
+    }
+    result
+}
 
 /// Per-scope context for mutation-candidate detection
 #[derive(Clone, Copy)]
@@ -58,6 +81,29 @@ fn callee_is_unresolved(
         || callee
             .iter_parents()
             .any(|(parent, _)| is_unresolved(&parent))
+}
+
+/// The candidate for one call passing an imported object to `callee`. Module
+/// scope records the call as written, so the error can name it.
+fn mutation_candidate(
+    eff: &Effect,
+    call_data: &CallData,
+    caller_function: Option<ModuleName>,
+    callee: ModuleName,
+    arg_offset: usize,
+) -> MutationCandidate {
+    let site = match caller_function {
+        Some(name) => MutationCandidateSite::Function { name },
+        None => MutationCandidateSite::ModuleScope { call: eff.name },
+    };
+    MutationCandidate {
+        callee,
+        site,
+        arg_offset,
+        imported_args: call_data.imported_args().clone(),
+        range: eff.range,
+        from_main_guard: eff.from_main_guard,
+    }
 }
 
 /// Per function, the set of parameters that are method-mutated either directly or transitively via
@@ -195,95 +241,141 @@ pub(super) fn compute_mutated_params(
 }
 
 impl ProjectInfo {
-    /// Collect calls that pass an imported object to a callee unresolved in this library (a
-    /// cross-library candidate), grouped by the caller's module.
-    /// Callees resolvable in this library are skipped; the map step already handled them via
-    /// `call_mutates_imported_arg`. Callees that are not imported from another library (builtins,
-    /// stdlib used without import, locals) are also skipped: they can never resolve to a cached
-    /// library function at reduce time.
-    pub(super) fn collect_mutation_candidates(
+    /// Collect the facts the reduce has to settle, grouped by the caller's
+    /// module: mutation candidates and parameter forwarding this library
+    /// cannot resolve.
+    ///
+    /// `forwarding` is `No` for whole-program, which resolves every forwarding
+    /// locally and would only pay to discard the records.
+    pub(super) fn collect_cross_library_facts(
         &self,
         import_graph: &ImportGraph,
-    ) -> AHashMap<ModuleName, Vec<MutationCandidate>> {
-        let mut flat: Vec<(ModuleName, MutationCandidate)> = self
+        forwarding: CollectForwarding,
+    ) -> CrossLibraryFacts {
+        type Flat = (
+            Vec<(ModuleName, MutationCandidate)>,
+            Vec<(ModuleName, ForwardedParam)>,
+        );
+        let (mut flat_candidates, flat_forwarded): Flat = self
             .effect_table
             .par_iter()
-            .fold(Vec::new, |mut acc, (scope, effs)| {
-                let mut caller_scope = None;
-                for eff in effs {
-                    let EffectData::Call(ref call_data) = eff.data else {
-                        continue;
-                    };
-                    if !call_data.has_unsafe_args() {
-                        continue;
-                    }
-                    for (callee, arg_offset) in iter_callees(eff, &self.classes) {
-                        // Resolvable in this library -> already handled by the map step.
-                        if self.functions.contains_key(&callee)
-                            || self.mutated_params.contains_key(&callee)
-                        {
-                            continue;
-                        }
-                        // Resolve and cache the scope's module, caller name, and the module's
-                        // unresolved-import sets.
-                        let Some(MutationCandidateScope {
-                            module,
-                            caller_function,
-                            missing,
-                            ambiguous,
-                        }) = *caller_scope.get_or_insert_with(|| {
-                            self.mutation_candidate_scope(scope, import_graph)
-                        })
-                        else {
-                            // `None` means the module is unknown or has no unresolved imports,
-                            // so no callee here can resolve cross-library.
-
+            .fold(
+                || (Vec::new(), Vec::new()),
+                |(mut candidates, mut forwarded), (scope, effs)| {
+                    let mut caller_scope = None;
+                    let mut caller_defs = None;
+                    for eff in effs {
+                        let EffectData::Call(ref call_data) = eff.data else {
                             continue;
                         };
-                        // Only defer callees that could actually resolve to another
-                        // library: those imported here but unresolved locally. Skips
-                        // builtins and unimported names, which are never confirmed at reduce.
-                        if !callee_is_unresolved(&callee, missing, ambiguous) {
+                        let wants_candidate = call_data.has_unsafe_args();
+                        let wants_forwarding = forwarding == CollectForwarding::Yes
+                            && call_data.has_forwarded_params();
+                        if !wants_candidate && !wants_forwarding {
                             continue;
                         }
-                        let site = match &caller_function {
-                            Some(name) => MutationCandidateSite::Function { name: *name },
-                            None => MutationCandidateSite::ModuleScope { call: eff.name },
-                        };
-                        acc.push((
-                            module,
-                            MutationCandidate {
-                                callee,
-                                site,
-                                arg_offset,
-                                imported_args: call_data.imported_args().clone(),
-                                range: eff.range,
-                                from_main_guard: eff.from_main_guard,
-                            },
-                        ));
+                        for (callee, arg_offset) in iter_callees(eff, &self.classes) {
+                            // Already a known mutator here, so the map step applied it.
+                            // A callee merely defined here is settled too when no
+                            // forwarding is collected: only the incremental path can
+                            // still learn it mutates, through a hop in another library.
+                            if self.mutated_params.contains_key(&callee)
+                                || (forwarding == CollectForwarding::No
+                                    && self.functions.contains_key(&callee))
+                            {
+                                continue;
+                            }
+                            // Resolve and cache the scope's module, caller name, and the
+                            // module's unresolved-import sets.
+                            let Some(MutationCandidateScope {
+                                module,
+                                caller_function,
+                                missing,
+                                ambiguous,
+                            }) = *caller_scope.get_or_insert_with(|| {
+                                self.mutation_candidate_scope(scope, import_graph)
+                            })
+                            else {
+                                // The module is unknown, so nothing here can be placed.
+                                continue;
+                            };
+                            let local_callee = self.functions.contains_key(&callee);
+                            if !local_callee && !callee_is_unresolved(&callee, missing, ambiguous) {
+                                continue;
+                            }
+                            if wants_candidate && !local_callee {
+                                candidates.push((
+                                    module,
+                                    mutation_candidate(
+                                        eff,
+                                        call_data,
+                                        caller_function,
+                                        callee,
+                                        arg_offset,
+                                    ),
+                                ));
+                            }
+                            if !wants_forwarding {
+                                continue;
+                            }
+                            // Module scope has no parameters to forward.
+                            let Some(function) = caller_function else {
+                                continue;
+                            };
+                            // Keyed on `module`, which is fixed for the scope, so
+                            // this is resolved once per scope rather than per callee.
+                            let defs = *caller_defs.get_or_insert_with(|| {
+                                self.analysis_map.get(&module).map(|m| &m.definitions)
+                            });
+                            for (slot, param) in call_data.forwarded_params() {
+                                // An unresolvable signature must not read as
+                                // keyword-only, which would miss a positional match.
+                                let position = match defs {
+                                    Some(d) => d.classify_param(scope, param.as_str()),
+                                    None => ParamPosition::Unresolved,
+                                };
+                                forwarded.push((
+                                    module,
+                                    ForwardedParam {
+                                        function,
+                                        param: *param,
+                                        position,
+                                        callee,
+                                        slot: slot.clone(),
+                                        arg_offset,
+                                        from_main_guard: eff.from_main_guard,
+                                    },
+                                ));
+                            }
+                        }
                     }
-                }
-                acc
-            })
-            .reduce(Vec::new, |mut a, mut b| {
-                a.append(&mut b);
-                a
-            });
+                    (candidates, forwarded)
+                },
+            )
+            .reduce(
+                || (Vec::new(), Vec::new()),
+                |(mut ca, mut fa), (mut cb, mut fb)| {
+                    ca.append(&mut cb);
+                    fa.append(&mut fb);
+                    (ca, fa)
+                },
+            );
 
         // Reduce-time application is order-sensitive, so sort to keep the sequence
-        // independent of how the parallel collection happened to interleave.
-        flat.par_sort_unstable();
+        // independent of how the parallel collection happened to interleave. The
+        // forwarded records are not sorted: the fixpoint that reads them decides
+        // against one frozen state, so their order carries nothing.
+        flat_candidates.par_sort_unstable();
 
-        let mut result: AHashMap<ModuleName, Vec<MutationCandidate>> = AHashMap::new();
-        for (module, candidate) in flat {
-            result.entry(module).or_default().push(candidate);
+        CrossLibraryFacts {
+            candidates: group_by_module(flat_candidates),
+            forwarded_params: group_by_module(flat_forwarded),
         }
-        result
     }
 
     /// Resolve the enclosing module and scope-local caller name for `scope`, together with the
     /// module's unresolved-import sets (fetched once per scope).
-    /// Returns `None` when the module can't be located, or when it has no unresolved imports.
+    /// Returns `None` when the module can't be located.
     fn mutation_candidate_scope<'a>(
         &self,
         scope: &ModuleName,
@@ -300,9 +392,6 @@ impl ProjectInfo {
         };
         let missing = import_graph.get_missing_imports(&module);
         let ambiguous = import_graph.get_ambiguous_imports(&module);
-        if missing.is_none() && ambiguous.is_none() {
-            return None;
-        }
         Some(MutationCandidateScope {
             module,
             caller_function,
