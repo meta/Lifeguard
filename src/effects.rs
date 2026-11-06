@@ -169,7 +169,17 @@ impl CallKind {
 }
 
 /// The argument slot a forwarded parameter is passed into at a call site.
-#[derive(Debug, Eq, PartialEq, Hash, Clone)]
+#[derive(
+    Debug,
+    Eq,
+    PartialEq,
+    PartialOrd,
+    Ord,
+    Hash,
+    Clone,
+    Serialize,
+    Deserialize
+)]
 pub enum ArgSlot {
     /// Positional argument at the given index.
     Positional(usize),

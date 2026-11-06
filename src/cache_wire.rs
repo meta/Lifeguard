@@ -40,11 +40,13 @@ use crate::cache::CachedSafety;
 use crate::cache::ConstructorCallees;
 use crate::cache::LibraryCache;
 use crate::cache::MainGuardFacts;
+use crate::effects::ArgSlot;
 use crate::effects::ImportedArgs;
 use crate::errors::SafetyError;
 use crate::hasher::AHashMap;
 use crate::hasher::AHashSet;
 use crate::hasher::HashSetExt;
+use crate::module_safety::ForwardedParam;
 use crate::module_safety::FunctionSafety;
 use crate::module_safety::FunctionSafetyInfo;
 use crate::module_safety::MutatedParam;
@@ -87,6 +89,7 @@ struct WireModule {
     mutation_candidates: Vec<WireMutationCandidate>,
     property_candidates: Vec<WirePropertyCandidate>,
     subclass_candidates: Vec<WireSubclassCandidate>,
+    forwarded_params: Vec<WireForwardedParam>,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -124,6 +127,24 @@ struct WirePropertyCandidate {
 struct WireSubclassCandidate {
     class: NameId,
     from_main_guard: bool,
+}
+
+#[derive(Serialize, Deserialize)]
+struct WireForwardedParam {
+    function: NameId,
+    param: NameId,
+    position: ParamPosition,
+    callee: NameId,
+    slot: WireArgSlot,
+    arg_offset: usize,
+    from_main_guard: bool,
+}
+
+#[derive(Serialize, Deserialize)]
+enum WireArgSlot {
+    Positional(usize),
+    Keyword(NameId),
+    StarExpansion(usize),
 }
 
 #[derive(Serialize, Deserialize)]
@@ -248,6 +269,12 @@ fn collect_module_names(module: &CachedModule, names: &mut AHashSet<ModuleName>)
     for info in module.function_safety.values() {
         names.extend(info.missing_dep_callees.iter().copied());
         names.extend(info.mutated_params.iter().map(|param| param.name));
+    }
+    for forwarded in &module.forwarded_params {
+        names.extend([forwarded.function, forwarded.param, forwarded.callee]);
+        if let ArgSlot::Keyword(name) = &forwarded.slot {
+            names.insert(*name);
+        }
     }
     for candidate in &module.mutation_candidates {
         names.insert(candidate.callee);
@@ -541,6 +568,9 @@ impl WireModule {
             module.subclass_candidates.iter().collect();
         subclass_candidates.sort_unstable();
 
+        let mut forwarded_params: Vec<&ForwardedParam> = module.forwarded_params.iter().collect();
+        forwarded_params.sort_unstable();
+
         Self {
             name: table.id(module.name),
             safety: WireSafety::encode(&module.safety, table),
@@ -569,6 +599,12 @@ impl WireModule {
             subclass_candidates: subclass_candidates
                 .into_iter()
                 .map(|candidate| WireSubclassCandidate::encode(candidate, table))
+                .collect(),
+            // Sorted: the reduce classifies these against one frozen state, so
+            // the order they arrive in carries nothing.
+            forwarded_params: forwarded_params
+                .into_iter()
+                .map(|forwarded| WireForwardedParam::encode(forwarded, table))
                 .collect(),
         }
     }
@@ -602,6 +638,47 @@ impl WireModule {
                 .into_iter()
                 .map(|candidate| candidate.decode(names))
                 .collect::<Result<_>>()?,
+            forwarded_params: self
+                .forwarded_params
+                .into_iter()
+                .map(|forwarded| forwarded.decode(names))
+                .collect::<Result<_>>()?,
+        })
+    }
+}
+
+impl WireForwardedParam {
+    fn encode(forwarded: &ForwardedParam, table: &NameTable) -> Self {
+        let slot = match &forwarded.slot {
+            ArgSlot::Positional(idx) => WireArgSlot::Positional(*idx),
+            ArgSlot::Keyword(name) => WireArgSlot::Keyword(table.id(*name)),
+            ArgSlot::StarExpansion(start) => WireArgSlot::StarExpansion(*start),
+        };
+        Self {
+            function: table.id(forwarded.function),
+            param: table.id(forwarded.param),
+            position: forwarded.position,
+            callee: table.id(forwarded.callee),
+            slot,
+            arg_offset: forwarded.arg_offset,
+            from_main_guard: forwarded.from_main_guard,
+        }
+    }
+
+    fn decode(self, names: &[ModuleName]) -> Result<ForwardedParam> {
+        let slot = match self.slot {
+            WireArgSlot::Positional(idx) => ArgSlot::Positional(idx),
+            WireArgSlot::Keyword(name) => ArgSlot::Keyword(decode_name(names, name)?),
+            WireArgSlot::StarExpansion(start) => ArgSlot::StarExpansion(start),
+        };
+        Ok(ForwardedParam {
+            function: decode_name(names, self.function)?,
+            param: decode_name(names, self.param)?,
+            position: self.position,
+            callee: decode_name(names, self.callee)?,
+            slot,
+            arg_offset: self.arg_offset,
+            from_main_guard: self.from_main_guard,
         })
     }
 }
@@ -869,6 +946,18 @@ mod tests {
         }
     }
 
+    fn forwarded(function: &str, callee: &str) -> ForwardedParam {
+        ForwardedParam {
+            function: mn(function),
+            param: mn("y"),
+            position: ParamPosition::Positional(0),
+            callee: mn(callee),
+            slot: ArgSlot::Positional(0),
+            arg_offset: 0,
+            from_main_guard: false,
+        }
+    }
+
     fn fixture_cache(reversed: bool) -> LibraryCache {
         let mut function_safety = AHashMap::new();
         let mut zeta_func = FunctionSafetyInfo::new(FunctionSafety::UnsafeMissingDep);
@@ -905,6 +994,13 @@ mod tests {
                 reversed,
                 vec![subclass("pkg.zeta.Zeta"), subclass("pkg.zeta.Alpha")],
             ),
+            forwarded_params: arrange(
+                reversed,
+                vec![
+                    forwarded("zeta_func", "dep.zeta"),
+                    forwarded("alpha_func", "dep.alpha"),
+                ],
+            ),
             safety: CachedSafety::Ok(CachedModuleSafety {
                 errors: arrange(reversed, vec![error("zeta.call()"), error("alpha.call()")]),
                 force_imports_eager_overrides: Vec::new(),
@@ -934,6 +1030,7 @@ mod tests {
             main_guard: MainGuardFacts::default(),
             property_candidates: Vec::new(),
             subclass_candidates: Vec::new(),
+            forwarded_params: Vec::new(),
             safety: CachedSafety::AnalysisError {
                 message: "parse error".to_owned(),
             },
@@ -1043,6 +1140,11 @@ mod tests {
             "subclass candidates must encode in class order",
         );
         assert!(
+            wire.forwarded_params
+                .is_sorted_by_key(|forwarded| forwarded.function),
+            "forwarded params must encode in forwarding-function order",
+        );
+        assert!(
             wire.function_safety
                 .is_sorted_by_key(|(name, _)| name.as_str()),
             "function safety must encode in local-name order",
@@ -1108,6 +1210,7 @@ mod tests {
                 main_guard: MainGuardFacts::default(),
                 property_candidates: Vec::new(),
                 subclass_candidates: Vec::new(),
+                forwarded_params: Vec::new(),
                 safety: CachedSafety::Ok(CachedModuleSafety::default()),
                 imports: [mn(import)].into_iter().collect(),
                 missing_imports: AHashSet::new(),

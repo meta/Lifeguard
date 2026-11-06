@@ -284,6 +284,7 @@ impl CachedModule {
             mutation_candidates,
             property_candidates,
             subclass_candidates,
+            forwarded_params,
             main_guard,
         } = other;
 
@@ -304,7 +305,8 @@ impl CachedModule {
             }
         }
         extend_deduped(&mut self.mutation_candidates, mutation_candidates);
-        // Unlike mutation candidates, property candidates are resolved independently of
+        extend_deduped(&mut self.forwarded_params, forwarded_params);
+        // Unlike the two above, property candidates are resolved independently of
         // each other, so they can simply be sorted and deduped.
         self.property_candidates.extend(property_candidates);
         self.property_candidates.sort_unstable();
@@ -449,6 +451,49 @@ pub(super) fn merge_class_properties(
 mod tests {
 
     use super::*;
+    use crate::effects::ArgSlot;
+    use crate::module_safety::ForwardedParam;
+    use crate::module_safety::ParamPosition;
+
+    fn forwarded(function: &str, param: &str, callee: &str) -> ForwardedParam {
+        ForwardedParam {
+            function: ModuleName::from_str(function),
+            param: ModuleName::from_str(param),
+            position: ParamPosition::Positional(0),
+            callee: ModuleName::from_str(callee),
+            slot: ArgSlot::Positional(0),
+            arg_offset: 0,
+            from_main_guard: false,
+        }
+    }
+
+    /// Two libraries can each hold a copy of the same module; keeping only the
+    /// receiver's loses the hop a dropped record would have completed.
+    #[test]
+    fn merge_keeps_both_copies_forwarded_params() {
+        let name = ModuleName::from_str("pkg.mod");
+        let mine = forwarded("forward", "y", "other.sink");
+        let theirs = forwarded("relay", "z", "other.drain");
+
+        let mut source = CachedModule::empty(name);
+        // `mine` appears on both sides, so this pins the dedup as well as the merge.
+        source.forwarded_params = vec![mine.clone(), theirs.clone()];
+
+        let mut merged = CachedModule::empty(name);
+        merged.forwarded_params = vec![mine.clone()];
+        merged.merge(source);
+
+        let names: Vec<&str> = merged
+            .forwarded_params
+            .iter()
+            .map(|f| f.function.as_str())
+            .collect();
+        assert_eq!(
+            names,
+            vec!["forward", "relay"],
+            "both copies' records survive, deduplicated, in first-seen order",
+        );
+    }
 
     #[test]
     fn merge_class_bases_unions_duplicate_class_fqns() {

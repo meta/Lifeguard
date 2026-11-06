@@ -203,6 +203,7 @@ mod tests {
             mutation_candidates: Vec::new(),
             property_candidates: Vec::new(),
             subclass_candidates: Vec::new(),
+            forwarded_params: Vec::new(),
             main_guard: MainGuardFacts::default(),
         })
     }
@@ -317,7 +318,7 @@ mod tests {
             std::mem::size_of::<lifeguard::cache::ConstructorCallees>(),
             40,
         );
-        assert_eq!(std::mem::size_of::<CachedModule>(), 344);
+        assert_eq!(std::mem::size_of::<CachedModule>(), 368);
         assert_eq!(std::mem::size_of::<CachedSafety>(), 72);
         assert_eq!(std::mem::size_of::<CachedModuleSafety>(), 72);
         assert_eq!(std::mem::size_of::<MainGuardFacts>(), 32);

@@ -28,6 +28,7 @@ use crate::hasher::AHashSet;
 use crate::hasher::HashMapExt;
 use crate::hasher::HashSetExt;
 use crate::imports::ImportGraph;
+use crate::module_safety::ForwardedParam;
 use crate::module_safety::FunctionSafetyInfo;
 use crate::module_safety::MutationCandidate;
 use crate::module_safety::PropertyCandidate;
@@ -255,6 +256,9 @@ pub struct CachedModule {
     /// Module-scope classes with bases, checked against the merged walked bases in
     /// the reduce step.
     pub subclass_candidates: Vec<SubclassCandidate>,
+    /// Calls forwarding one of the caller's own parameters to a callee this
+    /// library could not resolve, completed in the reduce step.
+    pub forwarded_params: Vec<ForwardedParam>,
     /// The edges only an `if __name__ == "__main__"` body writes. Dropped by
     /// the reduce for every module that is not the binary's entry point, which
     /// is the only place that knows which one that is.
@@ -362,14 +366,22 @@ impl LibraryCache {
                     mutation_candidates,
                     property_candidates,
                     subclass_candidates,
+                    forwarded_params,
                 ) = match safety_result {
                     SafetyResult::Ok(ms) => (
                         ms.function_safety.clone(),
                         ms.mutation_candidates.clone(),
                         ms.property_candidates.clone(),
                         ms.subclass_candidates.clone(),
+                        ms.forwarded_params.clone(),
                     ),
-                    _ => (AHashMap::new(), Vec::new(), Vec::new(), Vec::new()),
+                    _ => (
+                        AHashMap::new(),
+                        Vec::new(),
+                        Vec::new(),
+                        Vec::new(),
+                        Vec::new(),
+                    ),
                 };
 
                 let safety = CachedSafety::from_safety_result(safety_result);
@@ -385,6 +397,7 @@ impl LibraryCache {
                     mutation_candidates,
                     property_candidates,
                     subclass_candidates,
+                    forwarded_params,
                     main_guard: MainGuardFacts::new(main_guard_imports),
                 }
             })
@@ -457,6 +470,7 @@ impl CachedModule {
             mutation_candidates: Vec::new(),
             property_candidates: Vec::new(),
             subclass_candidates: Vec::new(),
+            forwarded_params: Vec::new(),
             main_guard: MainGuardFacts::default(),
         }
     }

@@ -633,6 +633,7 @@ mod tests {
                     mutation_candidates: Vec::new(),
                     property_candidates: Vec::new(),
                     subclass_candidates: Vec::new(),
+                    forwarded_params: Vec::new(),
                     main_guard: MainGuardFacts::default(),
                 },
                 CachedModule {
@@ -651,6 +652,7 @@ mod tests {
                     mutation_candidates: Vec::new(),
                     property_candidates: Vec::new(),
                     subclass_candidates: Vec::new(),
+                    forwarded_params: Vec::new(),
                     main_guard: MainGuardFacts::default(),
                 },
             ],

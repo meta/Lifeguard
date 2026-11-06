@@ -10,6 +10,7 @@ use ruff_text_size::TextRange;
 use serde::Deserialize;
 use serde::Serialize;
 
+use crate::effects::ArgSlot;
 use crate::effects::ImportedArgs;
 use crate::errors::SafetyError;
 use crate::hasher::AHashMap;
@@ -90,7 +91,18 @@ impl std::ops::BitOr for FunctionSafety {
 /// genuinely has no positional slot and can be ruled out when the call is tracked
 /// precisely, whereas an unresolved parameter might still be positional and must
 /// be matched conservatively.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(
+    Debug,
+    Clone,
+    Copy,
+    PartialEq,
+    Eq,
+    PartialOrd,
+    Ord,
+    Hash,
+    Serialize,
+    Deserialize
+)]
 pub enum ParamPosition {
     /// Resolved to this positional index in the callee's signature.
     Positional(usize),
@@ -271,6 +283,40 @@ impl PartialOrd for SubclassCandidate {
     }
 }
 
+/// A call inside a function that forwards one of the function's own parameters
+/// to a callee this library cannot resolve.
+///
+/// `compute_mutated_params` runs this forwarding to a fixpoint within a library,
+/// but drops the edge at a library boundary because matching a positional slot
+/// needs the callee's signature.
+#[derive(
+    Debug,
+    Clone,
+    PartialEq,
+    Eq,
+    PartialOrd,
+    Ord,
+    Hash,
+    Serialize,
+    Deserialize
+)]
+pub struct ForwardedParam {
+    /// The forwarding function's module-local name (e.g. `forward`).
+    pub function: ModuleName,
+    /// The parameter of `function` that is forwarded.
+    pub param: ModuleName,
+    /// How `param` matches calls to `function`, for once it is known mutated.
+    pub position: ParamPosition,
+    /// Resolved FQN of the callee.
+    pub callee: ModuleName,
+    /// Where `param` lands in the callee's arguments.
+    pub slot: ArgSlot,
+    /// Receiver offset (implicit `self`/`cls`) for positional matching.
+    pub arg_offset: usize,
+    /// Recorded inside an `if __name__ == "__main__":` body.
+    pub from_main_guard: bool,
+}
+
 /// A module-scope or in-function call that passes an imported object to a callee
 /// that is unresolved in this library (a cross-library candidate).
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -301,6 +347,8 @@ pub struct ModuleSafety {
     pub function_safety: AHashMap<String, FunctionSafetyInfo>,
     /// Calls passing imported objects to cross-library-unresolved callees.
     pub mutation_candidates: Vec<MutationCandidate>,
+    /// Calls forwarding one of the caller's own parameters to such a callee.
+    pub forwarded_params: Vec<ForwardedParam>,
     /// Attribute accesses whose receiver type this library could not resolve.
     pub property_candidates: Vec<PropertyCandidate>,
     /// Module-scope classes with bases, settled once every walked base is known.
@@ -315,6 +363,7 @@ impl ModuleSafety {
             implicit_imports: Vec::new(),
             function_safety: AHashMap::new(),
             mutation_candidates: Vec::new(),
+            forwarded_params: Vec::new(),
             property_candidates: Vec::new(),
             subclass_candidates: Vec::new(),
         }

@@ -70,6 +70,7 @@ pub(super) fn drop_main_guarded(module: &mut CachedModule) -> usize {
         side_effect_imports,
         function_safety: _,
         mutation_candidates,
+        forwarded_params,
         property_candidates,
         subclass_candidates,
         main_guard,
@@ -107,6 +108,7 @@ pub(super) fn drop_main_guarded(module: &mut CachedModule) -> usize {
     dropped += retain_unguarded(mutation_candidates, |c| c.from_main_guard);
     dropped += retain_unguarded(property_candidates, |c| c.from_main_guard);
     dropped += retain_unguarded(subclass_candidates, |c| c.from_main_guard);
+    dropped += retain_unguarded(forwarded_params, |f| f.from_main_guard);
 
     let CachedSafety::Ok(safety) = safety else {
         return dropped;
