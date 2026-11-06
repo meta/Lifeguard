@@ -6,7 +6,7 @@ The LOAD_IMPORTS_EAGERLY set is distinct from the LAZY_ELIGIBLE dict:
 - **LOAD_IMPORTS_EAGERLY set**: Disables lazy imports entirely within a module. A module can both be safe to load lazily and in the LOAD_IMPORTS_EAGERLY set.
 
 ## The LOAD_IMPORTS_EAGERLY Cases
-A module is added to the LOAD_IMPORTS_EAGERLY set when any of the first five cases are detected anywhere in the module, regardless of scope or reachability from top-level code, or when its stub matches the sixth.
+A module is added to the LOAD_IMPORTS_EAGERLY set when any of cases 1-5 or 7 is detected anywhere in the module, regardless of scope or reachability from top-level code, or when its stub matches case 6.
 
 ### 1. Custom Finalizers
 **Trigger**: A class defines a `__del__` method.
@@ -146,4 +146,34 @@ The `.pyi` is only read for its declared names; the `.py` is still what gets ana
 # `sys.modules` with the Rust one declared by `artifacts_dir.pyi`
 # (`find_repo_root`, `SigilNotFound`).
 import antlir.rust  # noqa
+```
+
+### 7. os.chroot Call
+
+**Trigger**: A call that resolves to `os.chroot` (or `posix.chroot`), in any scope: `os.chroot(root)`, `from os import chroot`, or an alias such as `enter = os.chroot`. A function of the program's own that happens to be named `chroot` does not count.
+
+This case reaches past the module: when any module in the program calls `os.chroot`, the analyzer also empties the LAZY_ELIGIBLE dict, and the loader then imports every module eagerly.
+
+**Why this may be unsafe**: After `os.chroot` the program's own source files are outside the new root, so a deferred import resolved after the call cannot find its module and raises `ImportError`. The code that runs after the call is usually unrelated to the module that makes it (a build tool chroots, then runs plugin code), so no per-module set of imports is enough.
+
+**Python example**:
+
+```python
+# tool/archives.py
+from tool import commands  # deferred under lazy imports
+
+
+def merge(paths):
+    commands.run(["ar", "x", *paths])  # resolves `commands` after the chroot -> ImportError
+
+
+# tool/builder.py
+import os
+
+from tool import archives
+
+
+def build(root, paths):
+    os.chroot(root)
+    archives.merge(paths)
 ```

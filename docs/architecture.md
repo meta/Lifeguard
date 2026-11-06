@@ -196,6 +196,7 @@ The analyzer produces a `LifeGuardOutput` with two main components:
      - `SysModulesAccess` - modules that access `sys.modules` (depends on other imports already being in `sys.modules`)
      - `BuiltinsImportOverride` - modules that store to `builtins.__import__` (deferred imports resolve through it, so replacing or deleting it re-enters the module)
      - `NamesOnlyInStub` - modules whose `.pyi` declares public names, none of which their `.py` binds (the `.py` is a loader its imports fill)
+     - `ChrootCall` - modules that call `os.chroot()` (no import can load after it); when any module does, `lazy_eligible` is emptied for the whole program
    - **Do NOT use `load_imports_eagerly` for general "unsafe module" handling** - that's what the `lazy_eligible` dict is for
    - The `load_imports_eagerly` set tells the loader to completely disable lazy import behavior for that module's imports
 

@@ -31,7 +31,7 @@ arguments by positional index and keyword name, uncertainty from `*args` and
 
 - **`is_runnable()`** — Returns true for call effects where the analyzer can recurse into the called function body: `FunctionCall`, `ImportedFunctionCall`, `DecoratorCall`, `ImportedDecoratorCall`, `MethodCall`, `UnboundMethodCall`. These trigger call graph traversal in `project/calls.rs`.
 
-- **`requires_eager_loading_imports()`** — On `ErrorKind`; true for the errors of `CustomFinalizer`, `ExecCall`, `SysModulesAccess`, `SubclassesAccess`, `BuiltinsImportOverride`, and for `NamesOnlyInStub`, which no effect produces. These cause the module to be added to the `load_imports_eagerly` set regardless of scope.
+- **`requires_eager_loading_imports()`** — On `ErrorKind`; true for the errors of `CustomFinalizer`, `ExecCall`, `SysModulesAccess`, `SubclassesAccess`, `BuiltinsImportOverride`, `ChrootCall`, and for `NamesOnlyInStub`, which no effect produces. These cause the module to be added to the `load_imports_eagerly` set regardless of scope.
 
 - **`is_unsafe_stub_effect()`** — Returns true for `UnknownEffects`, `Unsafe`, `Mutation`. Used for stub file analysis.
 
@@ -106,6 +106,7 @@ pub struct SafetyError {
 | `SubclassesAccess` | `__subclasses__()` call |
 | `BuiltinsImportOverride` | Storing to or deleting `builtins.__import__` |
 | `NamesOnlyInStub` | The module's `.pyi` declares public names, none of which its `.py` binds |
+| `ChrootCall` | Call resolving to `os.chroot()` (also through an alias), in any scope; empties `lazy_eligible` for the whole program |
 | `ImportedModuleAssignment` | Assigning to an imported module's attribute |
 | `ImportedVarArgument` | Passing imported var to a function that mutates params |
 | `UnknownEffects` | Stub declares unknown effects |
@@ -128,7 +129,7 @@ pub struct ModuleSafety {
 
 - A module `is_safe()` when `errors` is empty.
 - A module `should_load_imports_eagerly()` when `force_imports_eager_overrides` is non-empty (only `CustomFinalizer`, `ExecCall`, `SysModulesAccess`, `SubclassesAccess`,
-  `BuiltinsImportOverride`, `NamesOnlyInStub`).
+  `BuiltinsImportOverride`, `NamesOnlyInStub`, `ChrootCall`).
 - `function_safety` and `mutation_candidates` carry per-function safety and
   unresolved-callee mutation candidates for `resolve_program` to settle. In incremental
   output, `project/analysis.rs::finalize_safety_map` projects owned callable verdicts and
@@ -167,6 +168,7 @@ call-site handling for the returned wrapper's effects.
    - `SysModulesAccess` → `SysModulesAccess`
    - `SubclassesAccess` → `SubclassesAccess`
    - `BuiltinsImportOverride` → `BuiltinsImportOverride`
+   - `ChrootCall` → `ChrootCall`
    - `UnknownDecoratorCall` → `UnknownDecoratorCall`
    - `UnknownEffects` → `UnknownEffects`
    - `UnknownObject` → `UnknownObject`
