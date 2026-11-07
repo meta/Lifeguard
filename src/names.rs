@@ -42,3 +42,49 @@ pub(crate) fn enclosing_module_str<'a>(
     }
     None
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn enclosing_module_lookups_split_at_the_longest_module_prefix() {
+        let modules = ["pkg", "pkg.mod", "paqueté", "paqueté.módulo"];
+        let cases = [
+            ("pkg.mod.Class.method", Some(("pkg.mod", "Class.method"))),
+            (
+                "pkg.missing.Class.method",
+                Some(("pkg", "missing.Class.method")),
+            ),
+            ("pkg.mod", Some(("pkg", "mod"))),
+            ("pkg", None),
+            ("pkg_extra.mod.member", None),
+            ("unrelated.mod.member", None),
+            ("", None),
+            (
+                "paqueté.módulo.Cláss.方法",
+                Some(("paqueté.módulo", "Cláss.方法")),
+            ),
+            ("paqueté.Cláss.方法", Some(("paqueté", "Cláss.方法"))),
+        ];
+
+        for (name, expected) in cases {
+            let expected = expected.map(|(module, suffix)| (ModuleName::from_str(module), suffix));
+            assert_eq!(
+                enclosing_module(name, |module| modules.contains(&module.as_str())),
+                expected,
+                "interned lookup: {name}",
+            );
+            assert_eq!(
+                enclosing_module_str(name, |prefix| {
+                    modules
+                        .iter()
+                        .find(|&&module| module == prefix)
+                        .map(|module| ModuleName::from_str(module))
+                }),
+                expected,
+                "string lookup: {name}",
+            );
+        }
+    }
+}
