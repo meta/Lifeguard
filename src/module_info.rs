@@ -93,6 +93,12 @@ impl DefinitionTable {
         defs.definitions.get(name)
     }
 
+    /// Drop the per-scope symbol tables once the owning module's own analysis is
+    /// done; the project-wide passes read only the three index fields below.
+    pub fn release_scope_symbols(&mut self) {
+        self.definitions = AHashMap::new();
+    }
+
     /// Classify how `param_name` of `func_scope` matches call arguments:
     /// `Unresolved` when the function's signature is unknown (so a positional
     /// parameter is never silently treated as keyword-only), `Positional(idx)`

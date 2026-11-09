@@ -155,7 +155,9 @@ fn analyze_module(
     module: &ParsedModule,
     ctx: &AnalysisContext,
 ) -> (ModuleName, AnalyzedModule) {
-    let output = analyzer::analyze(module, ctx.exports, ctx.import_graph, ctx.stubs, ctx.config);
+    let mut output =
+        analyzer::analyze(module, ctx.exports, ctx.import_graph, ctx.stubs, ctx.config);
+    output.definitions.release_scope_symbols();
     (mod_name, output)
 }
 
