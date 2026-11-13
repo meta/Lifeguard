@@ -11,6 +11,7 @@ use clap::Subcommand;
 use lifeguard::commands::analyze::AnalyzeArgs;
 use lifeguard::commands::analyze_binary::AnalyzeBinaryArgs;
 use lifeguard::commands::analyze_library::AnalyzeLibraryArgs;
+use lifeguard::commands::check_cache_coverage::CheckCacheCoverageArgs;
 use lifeguard::commands::compare_paths::ComparePathsArgs;
 use lifeguard::commands::gen_source_db::GenSourceDbArgs;
 use lifeguard::commands::run_tree::RunTreeArgs;
@@ -42,6 +43,8 @@ enum Commands {
     GenSourceDb(GenSourceDbArgs),
     /// Compare single-pass and incremental outputs for the same source DB (CI check)
     ComparePaths(ComparePathsArgs),
+    /// Check the deployed per-library caches cover the target's whole source DB (CI check)
+    CheckCacheCoverage(CheckCacheCoverageArgs),
 }
 
 fn main() -> Result<()> {
@@ -57,6 +60,9 @@ fn main() -> Result<()> {
         Some(Commands::ShowEffects(args)) => lifeguard::commands::show_effects::run(args),
         Some(Commands::GenSourceDb(args)) => lifeguard::commands::gen_source_db::run(args),
         Some(Commands::ComparePaths(args)) => lifeguard::commands::compare_paths::run(args),
+        Some(Commands::CheckCacheCoverage(args)) => {
+            lifeguard::commands::check_cache_coverage::run(args)
+        }
         None => lifeguard::commands::analyze::run(args.analyze),
     }
 }
