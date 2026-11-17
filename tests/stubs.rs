@@ -697,4 +697,33 @@ MAIN = threading.main_thread()
 "#;
         check(code);
     }
+
+    #[test]
+    fn test_inspect_predicates_are_safe() {
+        // A decorator that only inspects its argument is safe to apply at module scope.
+        let deco = r#"
+import functools
+import inspect
+
+def wrap(func):
+    if inspect.iscoroutinefunction(func) or inspect.isasyncgenfunction(func):
+        return func
+    if inspect.isgeneratorfunction(func) or inspect.isclass(func):
+        return func
+
+    @functools.wraps(func)
+    def inner(*args, **kwargs):
+        return func(*args, **kwargs)
+
+    return inner
+"#;
+        let main = r#"
+from deco import wrap
+
+@wrap
+def f():
+    pass
+"#;
+        check_all(vec![("deco", deco), ("__main__", main)]);
+    }
 }
