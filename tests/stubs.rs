@@ -10,6 +10,49 @@ mod tests {
     use lifeguard::test_lib::*;
 
     #[test]
+    fn test_pyjk_integer_construction_is_safe() {
+        check(
+            r#"
+import pyjk as justknobs
+from pyjk import IntegerKnob
+
+limit = IntegerKnob("test:limit")
+alias_limit = justknobs.IntegerKnob("test:alias_limit")
+"#,
+        );
+    }
+
+    #[test]
+    fn test_pyjk_evaluation_and_unverified_apis_stay_unsafe() {
+        let cases = [
+            (
+                "integer_call",
+                "from pyjk import IntegerKnob\nknob = IntegerKnob('test:limit')\nknob()",
+            ),
+            (
+                "temporary_integer_call",
+                "import pyjk\npyjk.IntegerKnob('test:limit')()",
+            ),
+            (
+                "boolean_constructor",
+                "import pyjk\npyjk.BooleanKnob('test:feature')",
+            ),
+            ("check", "import pyjk\npyjk.check('test:feature')"),
+            ("getval", "import pyjk\npyjk.getval('test:limit')"),
+            ("ready", "import pyjk\npyjk.ready()"),
+            ("patch_constructor", "import pyjk\npyjk.PyPatchJustKnobs()"),
+            (
+                "trackable_constructor",
+                "import pyjk\npyjk.TrackableBooleanKnob('test:feature')",
+            ),
+        ];
+        for (name, code) in cases {
+            let analysis = run_lifeguard_analysis(&vec![(name, code)]);
+            assert_failing(&analysis, vec![name]);
+        }
+    }
+
+    #[test]
     fn test_unknown_effects() {
         let code = r#"
 import lifeguard_test
