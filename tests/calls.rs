@@ -1226,4 +1226,34 @@ foo.bar.f()
 "#;
         check_all(vec![("foo.bar", foo_bar), ("__main__", __main__)]);
     }
+
+    /// A filter installed inside a `catch_warnings()` block overrides it, so deferring the
+    /// module that installs one changes which code raises or reports.
+    #[test]
+    fn test_warning_filter_at_module_scope() {
+        let code = r#"
+import warnings
+from warnings import simplefilter
+
+class SchemaWarning(Warning):
+    pass
+
+warnings.filterwarnings("error", category=SchemaWarning)  # E: unsafe-function-call
+warnings.filterwarnings(action="error")  # E: unsafe-function-call
+simplefilter("error")  # E: unsafe-function-call
+warnings.filterwarnings("ignore", category=DeprecationWarning)  # E: unsafe-function-call
+"#;
+        check(code);
+    }
+
+    #[test]
+    fn test_warning_filter_in_function_body() {
+        let code = r#"
+import warnings
+
+def quiet():
+    warnings.simplefilter("ignore")
+"#;
+        check(code);
+    }
 }

@@ -41,11 +41,12 @@ def formatwarning(
     message: Warning | str, category: type[Warning], filename: str, lineno: int, line: str | None = None
 ) -> str: no_effects()
 
-# Warning filters mutate interpreter-global state, but are safe for Lifeguard's import-time model.
+# A filter installed inside a `catch_warnings()` block (`assertWarns`, `pytest.warns`) overrides
+# it, so deferring the module that installs one changes which code raises or reports.
 def filterwarnings(
     action: _ActionKind, message: str = "", category: type[Warning] = ..., module: str = "", lineno: int = 0, append: bool = False
-) -> None: no_effects()
-def simplefilter(action: _ActionKind, category: type[Warning] = ..., lineno: int = 0, append: bool = False) -> None: no_effects()
+) -> None: unsafe()
+def simplefilter(action: _ActionKind, category: type[Warning] = ..., lineno: int = 0, append: bool = False) -> None: unsafe()
 def resetwarnings() -> None: no_effects()
 
 class _OptionError(Exception): ...
