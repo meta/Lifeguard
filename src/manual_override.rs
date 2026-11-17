@@ -173,6 +173,8 @@ const SAFE_FUNCTIONS_ARRAY: &[&str] = &[
     // that log the wrapped function's return value at call time. Nothing runs at
     // decoration time beyond closure construction.
     "feed_ranking_infra.vanguard.logtools.log_return_value",
+    // Native factory stores the two argument strings in a fresh Identity object.
+    "infrasec.AclCheckingModule.IdentityUtil.makeIdentity",
 ];
 
 /// Copy of SAFE_FUNCTIONS_ARRAY as a global set for faster searching.
@@ -193,6 +195,30 @@ mod tests {
     fn test_name_check() {
         let name = ModuleName::from_str("libfb.py.lazy_import.lazy_import");
         assert!(declared_safe(&name));
+    }
+
+    #[test]
+    fn test_identity_factory_override() {
+        let provider = r#"
+class IdentityUtil:
+    @staticmethod
+    def makeIdentity(kind, value):
+        raise RuntimeError("deliberately unsafe factory double")
+
+    @staticmethod
+    def lookupIdentity(kind, value):
+        raise RuntimeError("stateful lookup")
+"#;
+        let code = r#"
+from infrasec.AclCheckingModule import IdentityUtil
+
+identity = IdentityUtil.makeIdentity("SERVICE_IDENTITY", "server")
+IdentityUtil.lookupIdentity("SERVICE_IDENTITY", "server")  # E: unsafe-function-call
+"#;
+        check_all(vec![
+            ("infrasec.AclCheckingModule", provider),
+            ("code", code),
+        ]);
     }
 
     #[test]
