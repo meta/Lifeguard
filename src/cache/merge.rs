@@ -17,7 +17,6 @@ use std::hash::Hash;
 
 use pyrefly_python::module_name::ModuleName;
 use rayon::prelude::*;
-use ruff_python_ast::name::Name;
 
 use crate::cache::CachedModule;
 use crate::cache::CachedModuleSafety;
@@ -33,10 +32,6 @@ use crate::hasher::HashMapExt;
 use crate::hasher::HashSetExt;
 use crate::module_safety::FunctionSafetyInfo;
 use crate::module_safety::SafetyResult;
-
-/// Working map used to dedup re-exports during the reduce, keyed by the exported
-/// `(module, attr)`; the value is one representative record per unique key.
-type ReExportDedupMap = AHashMap<ModuleName, AHashMap<Name, CachedReExport>>;
 
 impl LibraryCache {
     /// Propagate function_safety entries through re-exports.
@@ -147,8 +142,7 @@ impl LibraryCache {
         let extra_modules: usize = dep_caches.iter().map(|d| d.modules.len()).sum();
         self.modules.reserve(extra_modules);
 
-        // Split each dep cache into its modules (appended serially — cheap) and
-        // its re-export batch (deduped in parallel below).
+        // Split each dep cache into its modules and its re-export batch.
         let mut re_export_batches: Vec<Vec<CachedReExport>> =
             Vec::with_capacity(dep_caches.len() + 1);
         re_export_batches.push(std::mem::take(&mut self.exports.re_exports));
@@ -164,46 +158,13 @@ impl LibraryCache {
             self.exports.return_types.extend(dep.exports.return_types);
         }
 
-        // A module's re-exports recur across many caches, far outnumbering the
-        // unique set. Dedup by exported `(module, attr)` in parallel: each task
-        // folds a batch into a local map (cloning the attr only on first sight),
-        // then the per-task maps are unioned. Duplicates for a key are identical,
-        // so keeping any one is correct.
-        let deduped_map = re_export_batches
-            .into_par_iter()
-            .fold(ReExportDedupMap::default, |mut map, batch| {
-                for re in batch {
-                    let attrs = map.entry(re.exported_module).or_default();
-                    if !attrs.contains_key(re.exported_attr.as_str()) {
-                        attrs.insert(re.exported_attr.clone(), re);
-                    }
-                }
-                map
-            })
-            .reduce(ReExportDedupMap::default, |a, b| {
-                // Union the smaller map into the larger to minimize rehashing.
-                // Compare by total `(module, attr)` entries, not outer `len()` (the
-                // module count), so a few-modules/many-attrs map isn't mistaken for
-                // the smaller side.
-                let entries =
-                    |m: &ReExportDedupMap| m.values().map(|attrs| attrs.len()).sum::<usize>();
-                let (mut large, small) = if entries(&a) >= entries(&b) {
-                    (a, b)
-                } else {
-                    (b, a)
-                };
-                for (module, attrs) in small {
-                    let dst = large.entry(module).or_default();
-                    for (attr, re) in attrs {
-                        dst.entry(attr).or_insert(re);
-                    }
-                }
-                large
-            });
-        self.exports.re_exports = deduped_map
-            .into_values()
-            .flat_map(|attrs| attrs.into_values())
-            .collect();
+        // `sort_and_dedup` below keeps one record per exported `(module, attr)`.
+        let total_re_exports = re_export_batches.iter().map(Vec::len).sum();
+        let mut re_exports = Vec::with_capacity(total_re_exports);
+        for batch in re_export_batches {
+            re_exports.extend(batch);
+        }
+        self.exports.re_exports = re_exports;
 
         // The module sort+coalesce and the re-export sort are independent (disjoint
         // fields), so run them concurrently instead of back to back.
@@ -214,7 +175,6 @@ impl LibraryCache {
                 modules.par_sort_by_key(|m| m.name);
                 Self::merge_duplicate_modules(modules);
             },
-            // Sort the (already-deduped, much smaller) set for a stable output order.
             || exports.sort_and_dedup(),
         );
 

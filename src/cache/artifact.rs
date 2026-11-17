@@ -546,30 +546,28 @@ impl CachedExports {
 
     /// Sort into a canonical order and keep one record per key.
     ///
-    /// NOTE: Both sorts order by *more* than they dedup on. The sorts are unstable
-    /// and parallel, so records that tie on the dedup key come out in an order that
-    /// depends on how rayon split the slice; deduping then keeps whichever
-    /// landed first. Two records sharing a key but disagreeing on the rest should not
-    /// happen, since each is owned by exactly one library, but if it ever does, this
-    /// loses a fact reproducibly rather than differently each time.
+    /// Sorting by more than the dedup key keeps the smallest of any records sharing
+    /// a key, so a duplicate (one library owns each) is dropped reproducibly.
     pub(crate) fn sort_and_dedup(&mut self) {
-        self.re_exports.par_sort_by(|a, b| {
-            (
-                &a.exported_module,
-                &a.exported_attr,
-                &a.imported_module,
-                &a.imported_attr,
-            )
-                .cmp(&(
-                    &b.exported_module,
+        // Order by exported module once per module rather than once per comparison:
+        // dotted module names share long prefixes, so comparing them dominates a flat sort.
+        let mut by_module: AHashMap<ModuleName, Vec<CachedReExport>> = AHashMap::new();
+        for re in self.re_exports.drain(..) {
+            by_module.entry(re.exported_module).or_default().push(re);
+        }
+        let mut groups: Vec<(ModuleName, Vec<CachedReExport>)> = by_module.into_iter().collect();
+        groups.par_sort_unstable_by(|a, b| a.0.cmp(&b.0));
+        groups.par_iter_mut().for_each(|(_, group)| {
+            group.sort_unstable_by(|a, b| {
+                (&a.exported_attr, &a.imported_module, &a.imported_attr).cmp(&(
                     &b.exported_attr,
                     &b.imported_module,
                     &b.imported_attr,
                 ))
+            });
+            group.dedup_by(|a, b| a.exported_attr == b.exported_attr);
         });
-        self.re_exports.dedup_by(|a, b| {
-            a.exported_module == b.exported_module && a.exported_attr == b.exported_attr
-        });
+        self.re_exports = groups.into_iter().flat_map(|(_, group)| group).collect();
         self.return_types
             .par_sort_by(|a, b| (&a.function, &a.class).cmp(&(&b.function, &b.class)));
         self.return_types.dedup_by(|a, b| a.function == b.function);
