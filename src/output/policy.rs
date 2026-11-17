@@ -240,94 +240,62 @@ fn build_re_export_map_from_cache(
     re_exports: &[CachedReExport],
     failing_modules: &SmallSet<ModuleName>,
 ) -> AHashMap<ModuleName, AHashSet<ModuleName>> {
-    type ReMap = AHashMap<ModuleName, AHashSet<ModuleName>>;
-    /// Per-task accumulator threaded through `resolve_reexport_chain`.
-    #[derive(Default)]
-    struct ChainScratch {
-        map: ReMap,
-        memo: AHashMap<usize, Option<ModuleName>>,
-        path: Vec<usize>,
-        visited: AHashSet<usize>,
-    }
-
-    let chain: AHashMap<(ModuleName, &str), usize> = re_exports
+    let chain: AHashMap<(ModuleName, &str), u32> = re_exports
         .iter()
         .enumerate()
-        .map(|(i, r)| ((r.exported_module, r.exported_attr.as_str()), i))
+        .map(|(i, r)| ((r.exported_module, r.exported_attr.as_str()), i as u32))
         .collect();
-
-    // Resolve each re-export's chain in parallel: the `chain` index is read-only,
-    // and each task keeps its own scratch and result map (per-task memos recompute
-    // some chains, but the pass parallelizes). Then union the maps.
-    re_exports
+    let next: Vec<Option<u32>> = re_exports
         .par_iter()
-        .enumerate()
-        .fold(ChainScratch::default, |mut acc, (start_idx, re_export)| {
-            if let Some(source_module) = resolve_reexport_chain(
-                start_idx,
-                re_exports,
-                &chain,
-                &mut acc.memo,
-                &mut acc.path,
-                &mut acc.visited,
-            ) && failing_modules.contains(&source_module)
-            {
-                acc.map
-                    .entry(re_export.exported_module)
-                    .or_default()
-                    .insert(source_module);
-            }
-            acc
+        .map(|r| {
+            chain
+                .get(&(r.imported_module, r.imported_attr.as_str()))
+                .copied()
         })
-        .map(|acc| acc.map)
-        .reduce(ReMap::new, |a, b| {
-            // Extend the larger map with the smaller to minimize rehashing.
-            let (mut large, small) = if a.len() >= b.len() { (a, b) } else { (b, a) };
-            for (module, sources) in small {
-                large.entry(module).or_default().extend(sources);
-            }
-            large
-        })
-}
+        .collect();
+    drop(chain);
 
-fn resolve_reexport_chain(
-    start: usize,
-    re_exports: &[CachedReExport],
-    chain: &AHashMap<(ModuleName, &str), usize>,
-    memo: &mut AHashMap<usize, Option<ModuleName>>,
-    path: &mut Vec<usize>,
-    visited: &mut AHashSet<usize>,
-) -> Option<ModuleName> {
-    if let Some(&cached) = memo.get(&start) {
-        return cached;
+    // Where each chain ends: the module its last hop imports from, or `None` when it
+    // runs into a cycle. Each re-export is walked once; a walk stops at a resolved one.
+    #[derive(Clone, Copy)]
+    enum Source {
+        Unresolved,
+        OnPath,
+        Resolved(Option<ModuleName>),
     }
-    path.clear();
-    visited.clear();
-    let mut cur_module = re_exports[start].imported_module;
-    let mut cur_attr = re_exports[start].imported_attr.as_str();
-
-    let result = loop {
-        match chain.get(&(cur_module, cur_attr)) {
-            Some(&idx) => {
-                if let Some(&cached) = memo.get(&idx) {
-                    break cached;
-                }
-                if !visited.insert(idx) {
-                    break None;
-                }
-                path.push(idx);
-                cur_module = re_exports[idx].imported_module;
-                cur_attr = &re_exports[idx].imported_attr;
+    let mut sources = vec![Source::Unresolved; re_exports.len()];
+    let mut path = Vec::new();
+    for start in 0..re_exports.len() {
+        let mut cur = start;
+        let result = loop {
+            match sources[cur] {
+                Source::Resolved(result) => break result,
+                Source::OnPath => break None,
+                Source::Unresolved => {}
             }
-            None => break Some(cur_module),
+            sources[cur] = Source::OnPath;
+            path.push(cur);
+            match next[cur] {
+                Some(n) => cur = n as usize,
+                None => break Some(re_exports[cur].imported_module),
+            }
+        };
+        for i in path.drain(..) {
+            sources[i] = Source::Resolved(result);
         }
-    };
-
-    memo.insert(start, result);
-    for &idx in path.iter() {
-        memo.insert(idx, result);
     }
-    result
+
+    let mut map: AHashMap<ModuleName, AHashSet<ModuleName>> = AHashMap::new();
+    for (re_export, source) in re_exports.iter().zip(&sources) {
+        if let Source::Resolved(Some(source)) = *source
+            && failing_modules.contains(&source)
+        {
+            map.entry(re_export.exported_module)
+                .or_default()
+                .insert(source);
+        }
+    }
+    map
 }
 
 /// Build the lazy_eligible dict by scanning the import graph, handling cycles,
@@ -1380,6 +1348,34 @@ mod tests {
 
         let map = build_re_export_map_from_cache(&re_exports, &failing);
         assert!(!map.contains_key(&mn("b")));
+    }
+
+    #[test]
+    fn test_re_export_map_from_cache_chain_into_cycle() {
+        let re_export = |exported: &str, imported: &str| CachedReExport {
+            exported_module: mn(exported),
+            exported_attr: Name::new_static("Foo"),
+            imported_module: mn(imported),
+            imported_attr: Name::new_static("Foo"),
+        };
+        // `x` -> `a` <-> `b`; `y` -> `d`, which defines `Foo`.
+        let re_exports = vec![
+            re_export("x", "a"),
+            re_export("a", "b"),
+            re_export("b", "a"),
+            re_export("y", "d"),
+        ];
+        let failing = [mn("a"), mn("b"), mn("d")].into_iter().collect();
+
+        let map = build_re_export_map_from_cache(&re_exports, &failing);
+        assert!(
+            !map.contains_key(&mn("x")),
+            "a chain that runs into a cycle has no source"
+        );
+        assert!(
+            map[&mn("y")].contains(&mn("d")),
+            "a chain off the cycle still resolves"
+        );
     }
 
     // ---- get_report tests ----
