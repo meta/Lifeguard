@@ -300,6 +300,11 @@ mod tests {
         let options =
             ParseOptions::from(PySourceType::Python).with_target_version(default_ruff_version());
         let parsed = ruff_python_parser::parse_unchecked(source, options);
+        assert!(
+            parsed.errors().is_empty(),
+            "Invalid Python fixture: {source}\n{:?}",
+            parsed.errors(),
+        );
         match parsed.into_syntax() {
             ruff_python_ast::Mod::Module(m) => m,
             _ => panic!("Expected module"),
@@ -327,6 +332,12 @@ mod tests {
         cases
             .iter()
             .for_each(|(source, expected)| check(source, expected));
+    }
+
+    #[test]
+    #[should_panic(expected = "Invalid Python fixture")]
+    fn test_malformed_fixture_rejected() {
+        check("f(", "f()");
     }
 
     #[test]
@@ -395,7 +406,7 @@ mod tests {
             ("d['key']", "d[\"key\"]"),
             ("(a, b)", "(a, b)"),
             ("(a,)", "(a,)"),
-            ("*args", "*args"),
+            ("f(*args)", "f(*args)"),
             ("{1, 2, 3}", "{Int(1), Int(2), Int(3)}"),
             ("{**d}", "{**d}"),
         ]);
