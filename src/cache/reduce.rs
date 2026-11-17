@@ -335,6 +335,8 @@ fn is_resolved_error_verified_safe(
         return cleared;
     }
     let qualified = unqualified_index_key(error.metadata.as_str()).is_none();
+    // `UnsafeDecoratorCall` and unqualified callees use whole-program facts
+    // Qualified `UnknownDecoratorCall` names an imported callee, so it stays scoped
     if error.kind == ErrorKind::UnsafeDecoratorCall || !qualified {
         return whole_program.is_error_verified_safe(error);
     }
@@ -423,16 +425,7 @@ impl LibraryCache {
             .collect()
     }
 
-    /// Clear cached errors that are verified safe by the resolved program facts.
-    ///
-    /// Qualified callees use the owning module's newly resolved imports,
-    /// except bound calls to the caller's own module, which use the merged
-    /// verdicts unless the callee's promotion leaned on a module the caller did
-    /// not newly resolve. Unqualified callees use the
-    /// whole-program safe-name index, and an `UnsafeDecoratorCall` uses the
-    /// whole merged program's static verdicts.
-    /// A qualified `UnknownDecoratorCall` is not in that last group: it names a
-    /// callee, so it resolves like any other qualified error.
+    /// Clear verified errors without borrowing another caller's newly resolved imports
     fn finalize_resolution(&mut self, ctx: &ResolutionContext<'_>, outcome: &ResolutionOutcome) {
         // The map is built from the same facts `ctx.resolver` would use, and
         // hands out the whole-program resolver itself; the per-module scoped
