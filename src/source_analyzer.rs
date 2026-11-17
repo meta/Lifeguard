@@ -1777,8 +1777,8 @@ impl<'a> SourceAnalyzer<'a> {
                     .unwrap_or_else(|| ModuleName::from_str("<unknown exception>"))
             }
             // Bare `raise` (re-raise): we can't determine the type, so treat it as caught if
-            // we're inside any try body at all.
-            None if self.cursor.in_try_body() => return,
+            // any enclosing try block has a handler; a `finally` alone catches nothing.
+            None if self.cursor.try_handlers().next().is_some() => return,
             None => ModuleName::from_str("<unknown exception>"),
         };
 

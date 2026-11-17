@@ -202,6 +202,45 @@ except TypeError:
     }
 
     #[test]
+    fn test_bare_raise_in_try_finally() {
+        let code = r#"
+try:
+    raise  # E: unhandled-exception
+finally:
+    pass
+"#;
+        check(code);
+    }
+
+    #[test]
+    fn test_reraise_in_handler_under_try_finally() {
+        let code = r#"
+try:
+    try:
+        pass
+    except ValueError:
+        raise  # E: unhandled-exception
+finally:
+    pass
+"#;
+        check(code);
+    }
+
+    #[test]
+    fn test_reraise_in_handler_under_outer_handler() {
+        let code = r#"
+try:
+    try:
+        pass
+    except ValueError:
+        raise
+except TypeError:
+    pass
+"#;
+        check(code);
+    }
+
+    #[test]
     fn test_raise_in_function_defined_in_try() {
         let code = r#"
 try:
