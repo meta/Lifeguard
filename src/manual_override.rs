@@ -67,6 +67,11 @@ const SAFE_FUNCTIONS_ARRAY: &[&str] = &[
     // functools.wraps. Span is only started at call time. Explicitly designed
     // for module-level decoration before configure() is called.
     "tracing.span",
+    // Same shape as `tracing.span`: build an attribute dict, construct a SpanScope
+    // holding a deferred tracer lambda, and wrap with functools.wraps.
+    "tracing.genai.decorators.agent_span",
+    "tracing.genai.decorators.execute_tool_span",
+    "tracing.genai.decorators.platform_span",
     // Async equivalent of functools.lru_cache. At decoration time only copies
     // function metadata and initializes an empty OrderedDict. No I/O or event
     // loop interaction until the decorated function is actually called.
@@ -234,5 +239,28 @@ IdentityUtil.lookupIdentity("SERVICE_IDENTITY", "server")  # E: unsafe-function-
             lazy_import("foo")
         "#;
         check_all(vec![("code", code), ("libfb.py", libfb)]);
+    }
+
+    #[test]
+    fn test_tracing_genai_span_decorators() {
+        let decorators = r#"
+            def platform_span(func=None, **kwargs):
+                raise ValueError()
+        "#;
+        let code = r#"
+            from tracing.genai.decorators import platform_span
+
+            @platform_span
+            def f():
+                pass
+
+            @platform_span(name="op")
+            def g():
+                pass
+        "#;
+        check_all(vec![
+            ("code", code),
+            ("tracing.genai.decorators", decorators),
+        ]);
     }
 }
