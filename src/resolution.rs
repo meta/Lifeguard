@@ -573,8 +573,12 @@ fn callee_resolves_unsafe(callee: &ModuleName, view: &ModuleView<'_>) -> bool {
 
 /// A promotion candidate's callee, pre-split so fixpoint rounds do not repeat it.
 enum ResolvedCallee {
-    Qualified { module: ModuleName, local: String },
-    Unqualified { name: String },
+    /// `callee` is `<module>.<local>`.
+    Qualified {
+        module: ModuleName,
+        callee: ModuleName,
+    },
+    Unqualified(ModuleName),
 }
 
 struct PromotionCandidate {
@@ -592,16 +596,11 @@ pub(crate) enum NameSearch {
     ProbeStr,
 }
 
-/// Package a split callee, or the whole name when no prefix is a module.
-fn resolve_callee(func_name: &str, split: Option<(ModuleName, &str)>) -> ResolvedCallee {
-    match split {
-        Some((module, local)) => ResolvedCallee::Qualified {
-            module,
-            local: local.to_owned(),
-        },
-        None => ResolvedCallee::Unqualified {
-            name: func_name.to_owned(),
-        },
+/// Package a callee with the module it is defined in, or alone when it has none.
+fn resolve_callee(callee: ModuleName, module: Option<ModuleName>) -> ResolvedCallee {
+    match module {
+        Some(module) => ResolvedCallee::Qualified { module, callee },
+        None => ResolvedCallee::Unqualified(callee),
     }
 }
 
@@ -613,7 +612,7 @@ fn collect_promotion_candidates<F>(
     split: F,
 ) -> Vec<PromotionCandidate>
 where
-    F: Fn(&str) -> ResolvedCallee + Sync,
+    F: Fn(ModuleName) -> ResolvedCallee + Sync,
 {
     function_safety
         .par_iter()
@@ -632,7 +631,7 @@ where
                         callees: info
                             .missing_dep_callees
                             .iter()
-                            .map(|callee| split(callee.as_str()))
+                            .map(|callee| split(*callee))
                             .collect(),
                     })
                 } else {
@@ -647,7 +646,7 @@ where
 enum LinkedCallee {
     /// Index of another candidate: blocking until it is promoted.
     Candidate(u32),
-    Unqualified(String),
+    Unqualified(ModuleName),
 }
 
 /// Fold each candidate's fixed callees into its base verdict and point the rest at
@@ -673,18 +672,19 @@ fn link_candidates(
             let mut callees = Vec::new();
             for callee in split {
                 match callee {
-                    ResolvedCallee::Qualified { module, local } => {
-                        if let Some(&other) = index.get(&(module, local.as_str())) {
+                    ResolvedCallee::Qualified { module, callee } => {
+                        let local = &callee.as_str()[module.as_str().len() + 1..];
+                        if let Some(&other) = index.get(&(module, local)) {
                             callees.push(LinkedCallee::Candidate(other));
                         } else {
                             base.insert(
-                                get_function_safety(function_safety, &module, &local)
+                                get_function_safety(function_safety, &module, local)
                                     .map(|info| info.verdict)
                                     .and_then(maybe_non_blocking_verdict)?,
                             );
                         }
                     }
-                    ResolvedCallee::Unqualified { name } => {
+                    ResolvedCallee::Unqualified(name) => {
                         callees.push(LinkedCallee::Unqualified(name));
                     }
                 }
@@ -719,17 +719,24 @@ fn promote_fixpoint(
     // The promotion guard is stable: promotion only removes
     // `UnsafeMissingDep`. Precompute candidates and split their callees once.
     let mut candidates: Vec<PromotionCandidate> = match search {
-        NameSearch::Intern => collect_promotion_candidates(module_names, function_safety, |name| {
-            resolve_callee(name, enclosing_module(name, |m| module_names.contains(m)))
-        }),
+        NameSearch::Intern => {
+            collect_promotion_candidates(module_names, function_safety, |callee| {
+                resolve_callee(
+                    callee,
+                    enclosing_module(callee.as_str(), |m| module_names.contains(m))
+                        .map(|(module, _)| module),
+                )
+            })
+        }
         NameSearch::ProbeStr => {
             // Built once for the whole split, not per callee.
             let module_strs: AHashMap<&str, ModuleName> =
                 module_names.iter().map(|m| (m.as_str(), *m)).collect();
-            collect_promotion_candidates(module_names, function_safety, |name| {
+            collect_promotion_candidates(module_names, function_safety, |callee| {
                 resolve_callee(
-                    name,
-                    enclosing_module_str(name, |m| module_strs.get(m).copied()),
+                    callee,
+                    enclosing_module_str(callee.as_str(), |m| module_strs.get(m).copied())
+                        .map(|(module, _)| module),
                 )
             })
         }
@@ -739,10 +746,10 @@ fn promote_fixpoint(
     // index; hashing every function name would not affect resolution.
     for candidate in &candidates {
         for callee in &candidate.callees {
-            if let ResolvedCallee::Unqualified { name } = callee
+            if let ResolvedCallee::Unqualified(name) = callee
                 && !needed_unqualified.contains(name.as_str())
             {
-                needed_unqualified.insert(name.clone());
+                needed_unqualified.insert(name.as_str().to_owned());
             }
         }
     }
@@ -811,9 +818,11 @@ fn promote_fixpoint(
                         target.insert(match callee {
                             LinkedCallee::Candidate(other) => promoted_verdicts[*other as usize]
                                 .and_then(maybe_non_blocking_verdict),
-                            LinkedCallee::Unqualified(name) => {
-                                unqualified_verdict(name, &globally_safe, &globally_if_imported)
-                            }
+                            LinkedCallee::Unqualified(name) => unqualified_verdict(
+                                name.as_str(),
+                                &globally_safe,
+                                &globally_if_imported,
+                            ),
                         }?);
                     }
                     Some((index, target))
