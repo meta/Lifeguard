@@ -1154,6 +1154,59 @@ mod tests {
         }
     }
 
+    #[test]
+    fn test_submodule_shadowed_by_its_package_never_defers() {
+        // A deferred `import pkg.driver` binds the submodule over `pkg.driver`, the object
+        // `pkg/__init__` re-exported under the same name.
+        let modules = vec![
+            ("pkg", "from pkg.driver import driver"),
+            (
+                "pkg.driver",
+                "class DriverConfig:\n    active = 1\n\ndriver = DriverConfig",
+            ),
+            ("user", "import pkg.driver as drv"),
+        ];
+
+        let result = run_lifeguard_analysis(&modules);
+
+        assert!(
+            result
+                .output
+                .lazy_eligible
+                .get(&ModuleName::from_str("pkg.driver"))
+                .is_none(),
+            "pkg.driver must always load eagerly"
+        );
+        assert!(
+            result
+                .output
+                .lazy_eligible
+                .get(&ModuleName::from_str("user"))
+                .is_some(),
+            "user should stay lazy-eligible"
+        );
+    }
+
+    #[test]
+    fn test_submodule_bound_by_its_package_stays_lazy() {
+        let modules = vec![
+            ("pkg", "from pkg import driver"),
+            ("pkg.driver", "ACTIVE = 1"),
+            ("user", "import pkg.driver as drv"),
+        ];
+
+        let result = run_lifeguard_analysis(&modules);
+
+        assert!(
+            result
+                .output
+                .lazy_eligible
+                .get(&ModuleName::from_str("pkg.driver"))
+                .is_some(),
+            "binding the submodule itself shadows nothing"
+        );
+    }
+
     fn run_lifeguard_analysis_verbose(modules: &Vec<(&str, &str)>) -> LifeGuardAnalysis {
         run_lifeguard_analysis_with(modules, &verbose_test_options())
     }
