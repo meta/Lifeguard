@@ -305,6 +305,66 @@ mod tests {
     }
 
     #[test]
+    fn test_remove_node_repairs_swapped_index_and_edges() {
+        let mut g = Graph::new();
+        let a = ModuleName::from_str("a");
+        let b = ModuleName::from_str("b");
+        let c = ModuleName::from_str("c");
+        for name in [&a, &b, &c] {
+            g.add_node(name);
+        }
+        for (from, to) in [(&a, &b), (&b, &c), (&c, &b), (&a, &c), (&c, &a), (&c, &c)] {
+            g.add_edge(from, to);
+        }
+
+        g.remove_node(&b);
+
+        assert_eq!(g.node_count(), 2);
+        assert!(!g.contains(&b));
+        assert_eq!(g.index_of(&b), None);
+        assert_eq!(g.index_of(&c), Some(1));
+        assert_eq!(g.name_at(1), &c);
+        assert_eq!(g.add_node(&c).index(), 1);
+        assert_deps(&g, "a", vec!["c"]);
+        assert_deps(&g, "c", vec!["a", "c"]);
+        assert_rdeps(&g, "a", vec!["c"]);
+        assert_rdeps(&g, "c", vec!["a", "c"]);
+        assert_deps(&g, "b", vec![]);
+        assert_rdeps(&g, "b", vec![]);
+
+        assert_eq!(g.add_node(&b).index(), 2);
+        assert_deps(&g, "b", vec![]);
+        assert_rdeps(&g, "b", vec![]);
+        assert!(g.add_edge(&b, &c));
+        assert_deps(&g, "b", vec!["c"]);
+        assert_rdeps(&g, "c", vec!["a", "b", "c"]);
+    }
+
+    #[test]
+    fn test_remove_last_and_missing_nodes() {
+        let mut g = Graph::new();
+        let a = ModuleName::from_str("a");
+        let b = ModuleName::from_str("b");
+        g.remove_node(&a);
+        assert_eq!(g.node_count(), 0);
+
+        g.add_node(&a);
+        g.add_node(&b);
+        g.add_edge(&a, &b);
+        g.remove_node(&b);
+        g.remove_node(&b);
+        assert_eq!(g.node_count(), 1);
+        assert_eq!(g.index_of(&a), Some(0));
+        assert_eq!(g.index_of(&b), None);
+        assert_deps(&g, "a", vec![]);
+
+        g.remove_node(&a);
+        assert_eq!(g.node_count(), 0);
+        assert_eq!(g.index_of(&a), None);
+        assert_eq!(g.add_node(&a).index(), 0);
+    }
+
+    #[test]
     fn test_find_cycles_no_cycles() {
         let mut g = Graph::new();
         let a = ModuleName::from_str("a");
