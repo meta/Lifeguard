@@ -28,6 +28,7 @@ use crate::hasher::AHashSet;
 use crate::hasher::HashMapExt;
 use crate::hasher::HashSetExt;
 use crate::module_parser::ParsedModule;
+use crate::source_map::AstResult;
 use crate::source_map::ModuleProvider;
 use crate::tracing::time;
 use crate::traits::ModuleNameExt;
@@ -542,6 +543,48 @@ struct CollectedImports {
     main_guard_only: Imports,
 }
 
+impl CollectedImports {
+    fn imports_unguarded(&self, name: &ModuleName) -> bool {
+        (self.imports.contains(name) || self.ambiguous.contains(name))
+            && !self.main_guard_only.contains(name)
+    }
+
+    /// An edge stays `__main__`-guarded only when no occurrence of it is unguarded.
+    fn extend(&mut self, other: Self) {
+        self.main_guard_only
+            .retain(|name| !other.imports_unguarded(name));
+        let guarded: Vec<ModuleName> = other
+            .main_guard_only
+            .iter()
+            .filter(|name| !self.imports_unguarded(name))
+            .copied()
+            .collect();
+        self.main_guard_only.extend(guarded);
+        self.imports.extend(other.imports);
+        self.ambiguous.extend(other.ambiguous);
+    }
+}
+
+fn topology_and_effects(
+    sources: &impl ModuleProvider,
+    name: ModuleName,
+) -> Option<Result<(ParsedModule, Option<ParsedModule>), ModuleName>> {
+    let topology = match sources.parse_topology(&name)? {
+        AstResult::Ok(module) => module,
+        AstResult::ParserError(_) => return Some(Err(name)),
+    };
+    let effects = match sources
+        .overrides_source(&name)
+        .then(|| sources.parse(&name))
+        .flatten()
+    {
+        Some(AstResult::Ok(module)) => Some(module),
+        Some(AstResult::ParserError(_)) => return Some(Err(name)),
+        None => None,
+    };
+    Some(Ok((topology, effects)))
+}
+
 struct ImportGraphBuilder<'a> {
     graph: Graph,
     main_guard_only: AHashMap<ModuleName, AHashSet<ModuleName>>,
@@ -569,6 +612,20 @@ impl<'a> ImportGraphBuilder<'a> {
                 self.graph.add_node(name);
             }
         });
+    }
+
+    /// The source topology's imports, plus the stub's for a stub-overridden module.
+    fn collect_module_imports(
+        &self,
+        name: ModuleName,
+        topology: &ParsedModule,
+        effects: Option<&ParsedModule>,
+    ) -> CollectedImports {
+        let mut imports = self.collect_imports(name, topology);
+        if let Some(effects) = effects {
+            imports.extend(self.collect_imports(name, effects));
+        }
+        imports
     }
 
     fn collect_imports(&self, name: ModuleName, module: &ParsedModule) -> CollectedImports {
@@ -627,11 +684,11 @@ impl<'a> ImportGraphBuilder<'a> {
                 sources
                     .module_names_par_iter()
                     .filter_map(|name| {
-                        let ast_result = sources.parse(name)?;
-                        Some(match ast_result.as_parsed() {
-                            Ok(module) => Ok(self.collect_imports(*name, module)),
-                            Err(_) => Err(*name),
-                        })
+                        Some(
+                            topology_and_effects(sources, *name)?.map(|(topology, effects)| {
+                                self.collect_module_imports(*name, &topology, effects.as_ref())
+                            }),
+                        )
                     })
                     .collect()
             });
@@ -751,5 +808,39 @@ impl<'a> ImportGraphBuilder<'a> {
         });
 
         (import_graph, merged_exports, reached)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::CollectedImports;
+    use super::Imports;
+    use crate::hasher::HashSetExt;
+    use crate::source_map::ModuleName;
+
+    #[test]
+    fn complementary_ast_edges_keep_only_truly_guarded_occurrences() {
+        let module = ModuleName::from_str("test");
+        let guarded = ModuleName::from_str("guarded");
+        let unguarded = ModuleName::from_str("unguarded");
+        let guarded_in_other = ModuleName::from_str("guarded_in_other");
+        let mut source = CollectedImports {
+            module,
+            imports: [guarded, unguarded].into_iter().collect(),
+            ambiguous: Imports::new(),
+            main_guard_only: [guarded, unguarded].into_iter().collect(),
+        };
+        source.extend(CollectedImports {
+            module,
+            imports: [guarded_in_other].into_iter().collect(),
+            ambiguous: [unguarded].into_iter().collect(),
+            main_guard_only: [guarded_in_other].into_iter().collect(),
+        });
+        assert_eq!(
+            source.main_guard_only,
+            [guarded, guarded_in_other].into_iter().collect()
+        );
+        assert!(source.imports.contains(&unguarded));
+        assert!(source.ambiguous.contains(&unguarded));
     }
 }

@@ -8,11 +8,16 @@
 #[cfg(test)]
 mod tests {
     use lifeguard::config::AnalysisConfig;
+    use lifeguard::find_sources::build_source_db;
+    use lifeguard::find_sources::make_source_map;
     use lifeguard::imports::ImportGraph;
     use lifeguard::pyrefly::module_name::ModuleName;
+    use lifeguard::source_map::Sources;
     use lifeguard::test_lib::TestSources;
     use lifeguard::test_lib::build_import_graph;
     use lifeguard::test_lib::module_names;
+    use lifeguard::test_lib::populate_temp_dir;
+    use lifeguard::test_lib::test_options;
 
     fn assert_deps(g: &ImportGraph, module: &str, expected: Vec<&str>) {
         let m = ModuleName::from_str(module);
@@ -460,6 +465,35 @@ else:
                 ("plain", "pkg"),
                 ("plain", "pkg.sub"),
             ]
+        );
+    }
+
+    #[test]
+    fn bundled_source_provider_edges_retain_guard_provenance() {
+        let dir = populate_temp_dir(&[
+            (
+                "requests/__init__.py",
+                "from .api import get\nif __name__ == '__main__':\n    import guarded\n",
+            ),
+            ("requests/api.py", "from .auth import AuthBase\n"),
+            ("requests/auth.py", "class AuthBase:\n    pass\n"),
+            ("guarded.py", "VALUE = 1\n"),
+        ]);
+        let (db, _) = build_source_db(dir.path(), None, test_options().python_version).unwrap();
+        let sources = Sources::new(make_source_map(db), dir.path().to_path_buf());
+        let graph = ImportGraph::make(&sources, &AnalysisConfig::default());
+        let package = ModuleName::from_str("requests");
+        let api = ModuleName::from_str("requests.api");
+        let guarded = ModuleName::from_str("guarded");
+        assert!(graph.get_imports(&package).any(|name| *name == api));
+        assert!(
+            graph
+                .get_imports(&api)
+                .any(|name| *name == ModuleName::from_str("requests.auth"))
+        );
+        assert_eq!(
+            graph.get_main_guard_only_imports(&package),
+            Some(&[guarded].into_iter().collect()),
         );
     }
 }
