@@ -54,13 +54,20 @@ struct CompanionStub {
 enum SourceBacking {
     /// Source path relative to the source database's root directory.
     File(PathBuf),
-    /// Source supplied by Lifeguard's bundled in-memory stubs.
+    /// Only a bundled stub, which supplies both effects and topology
     Stub,
+    /// Both a source file and a bundled stub: `parse` returns the stub's effects,
+    /// `parse_topology` the file's imports and package shape
+    Overridden {
+        path: PathBuf,
+        /// Recorded by whichever parse reads the file first, so the stub can't hide it
+        parse_error: OnceLock<Option<String>>,
+    },
 }
 
 impl SourceBacking {
     fn is_stub(&self) -> bool {
-        matches!(self, Self::Stub)
+        matches!(self, Self::Stub | Self::Overridden { .. })
     }
 }
 
@@ -77,6 +84,13 @@ impl AstResult {
         match self {
             AstResult::Ok(parsed) => Ok(parsed),
             AstResult::ParserError(e) => Err(anyhow!("Parser error: {}", e)),
+        }
+    }
+
+    fn error_message(&self) -> Option<String> {
+        match self {
+            AstResult::Ok(_) => None,
+            AstResult::ParserError(e) => Some(e.to_string()),
         }
     }
 }
@@ -331,17 +345,24 @@ fn make_source_info_map(
 
     // Add entries from stubs (overrides source when both exist)
     for (mod_name, _) in stubs.raw_sources_iter() {
-        if info_map.contains_key(mod_name) {
+        if let Some(info) = info_map.get_mut(mod_name) {
             overridden.insert(*mod_name);
+            if let SourceBacking::File(path) = &info.backing {
+                info.backing = SourceBacking::Overridden {
+                    path: path.clone(),
+                    parse_error: OnceLock::new(),
+                };
+            }
+        } else {
+            info_map.insert(
+                *mod_name,
+                SourceInfo {
+                    is_init: stubs.is_init(mod_name),
+                    backing: SourceBacking::Stub,
+                    companion_stub: None,
+                },
+            );
         }
-        info_map.insert(
-            *mod_name,
-            SourceInfo {
-                is_init: stubs.is_init(mod_name),
-                backing: SourceBacking::Stub,
-                companion_stub: None,
-            },
-        );
     }
 
     (info_map, overridden)
@@ -361,6 +382,10 @@ pub trait ModuleProvider: Sync {
         self.len() == 0
     }
     fn parse(&self, name: &ModuleName) -> Option<AstResult>;
+    /// Imports and bindings may come from source even when effects come from a stub.
+    fn parse_topology(&self, name: &ModuleName) -> Option<AstResult> {
+        self.parse(name)
+    }
     fn is_stub(&self, name: &ModuleName) -> bool;
     fn overrides_source(&self, name: &ModuleName) -> bool;
     fn stubs(&self) -> &Stubs;
@@ -397,6 +422,24 @@ impl Sources {
             stubs,
             stub_overrides,
             python_version,
+        }
+    }
+
+    fn parse_file(&self, name: ModuleName, info: &SourceInfo, path: &Path) -> AstResult {
+        match read_and_parse_source_with_version(
+            &self.root_dir.join(path),
+            name,
+            info.is_init,
+            self.python_version,
+        ) {
+            Ok(mut parsed) => {
+                parsed.companion_stub_names = info
+                    .companion_stub
+                    .as_deref()
+                    .and_then(|stub| self.companion_stub_names(stub, name, info.is_init));
+                AstResult::Ok(parsed)
+            }
+            Err(error) => AstResult::ParserError(error),
         }
     }
 
@@ -446,28 +489,22 @@ impl ModuleProvider for Sources {
         let name = *name;
         let info = self.info_map.get(&name)?;
         match &info.backing {
-            // File-backed module: read and parse from root_dir/path.
-            SourceBacking::File(path) => {
-                let full_path = self.root_dir.join(path);
-                let result = match read_and_parse_source_with_version(
-                    &full_path,
+            SourceBacking::File(path) => Some(self.parse_file(name, info, path)),
+            SourceBacking::Overridden { path, parse_error } => {
+                let error =
+                    parse_error.get_or_init(|| self.parse_file(name, info, path).error_message());
+                if let Some(error) = error {
+                    return Some(AstResult::ParserError(anyhow!("{error}")));
+                }
+                let src = self.stubs.get_raw_source(&name)?;
+                Some(AstResult::Ok(parse_pyi_with_version(
+                    src,
                     name,
-                    info.is_init,
+                    self.stubs.is_init(&name),
                     self.python_version,
-                ) {
-                    Ok(mut parsed) => {
-                        parsed.companion_stub_names = info
-                            .companion_stub
-                            .as_deref()
-                            .and_then(|stub| self.companion_stub_names(stub, name, info.is_init));
-                        AstResult::Ok(parsed)
-                    }
-                    Err(e) => AstResult::ParserError(e),
-                };
-                Some(result)
+                )))
             }
-            // Stub module (no path): bundled/in-memory stubs may be partial or
-            // synthetic, so parse leniently rather than dropping them on an error.
+            // Bundled stubs may be synthetic; parsing them stays lenient.
             SourceBacking::Stub => {
                 let src = self.stubs.get_raw_source(&name)?;
                 Some(AstResult::Ok(parse_pyi_with_version(
@@ -478,6 +515,16 @@ impl ModuleProvider for Sources {
                 )))
             }
         }
+    }
+
+    fn parse_topology(&self, name: &ModuleName) -> Option<AstResult> {
+        let info = self.info_map.get(name)?;
+        let SourceBacking::Overridden { path, parse_error } = &info.backing else {
+            return self.parse(name);
+        };
+        let result = self.parse_file(*name, info, path);
+        let _ = parse_error.set(result.error_message());
+        Some(result)
     }
 
     fn is_stub(&self, name: &ModuleName) -> bool {
