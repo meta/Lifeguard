@@ -46,7 +46,7 @@ cargo build
 ## Quick Start — Analyze a directory (`run-tree`)
 
 The `run-tree` subcommand discovers `.py` files under a directory tree and
-follows resolvable top-level imports. File and directory names below the input
+follows resolvable imports. File and directory names below the input
 root must be ASCII Python identifiers; other paths are skipped.
 
 Run it against the bundled sample project:

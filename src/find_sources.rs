@@ -21,6 +21,8 @@ use anyhow::Context;
 use anyhow::Result;
 use itertools::Itertools;
 use ruff_python_ast::Stmt;
+use ruff_python_ast::statement_visitor::StatementVisitor;
+use ruff_python_ast::statement_visitor::walk_stmt;
 use ruff_python_parser::ParseOptions;
 use serde::Deserialize;
 use walkdir::WalkDir;
@@ -139,24 +141,39 @@ fn extract_imports(
     let options =
         ParseOptions::from(ruff_python_ast::PySourceType::Python).with_target_version(ruff_version);
     let parsed = ruff_python_parser::parse_unchecked(source, options);
-    let mut imports = Vec::new();
     let module = match parsed.into_syntax() {
         ruff_python_ast::Mod::Module(m) => m,
         _ => return Vec::new(),
     };
 
-    for stmt in module.body {
+    let mut collector = ImportCollector {
+        package,
+        imports: Vec::new(),
+    };
+    collector.visit_body(&module.body);
+    collector.imports
+}
+
+/// Collects the dotted module names an import statement can load, at any nesting depth.
+struct ImportCollector<'p> {
+    /// The file's package, against which relative imports are resolved.
+    package: Option<&'p str>,
+    imports: Vec<String>,
+}
+
+impl<'a> StatementVisitor<'a> for ImportCollector<'_> {
+    fn visit_stmt(&mut self, stmt: &'a Stmt) {
         match stmt {
             Stmt::Import(import) => {
                 for alias in &import.names {
-                    imports.push(alias.name.to_string());
+                    self.imports.push(alias.name.to_string());
                 }
             }
             Stmt::ImportFrom(import_from) => {
                 if import_from.level > 0 {
                     // Resolve relative import if we have a package context
-                    let Some(pkg) = package else {
-                        continue;
+                    let Some(pkg) = self.package else {
+                        return;
                     };
                     let base = resolve_relative_import(
                         import_from.level,
@@ -164,29 +181,27 @@ fn extract_imports(
                         pkg,
                     );
                     let Some(base) = base else {
-                        continue;
+                        return;
                     };
                     for alias in &import_from.names {
-                        imports.push(format!("{}.{}", base, alias.name));
+                        self.imports.push(format!("{}.{}", base, alias.name));
                     }
-                    imports.push(base);
-                    continue;
+                    self.imports.push(base);
+                    return;
                 }
                 if let Some(module) = &import_from.module {
                     let module_str = module.to_string();
                     // Also check if any imported name is itself a submodule
                     // e.g. `from foo import bar` where foo/bar.py exists
                     for alias in &import_from.names {
-                        imports.push(format!("{}.{}", module_str, alias.name));
+                        self.imports.push(format!("{}.{}", module_str, alias.name));
                     }
-                    imports.push(module_str);
+                    self.imports.push(module_str);
                 }
             }
-            _ => {}
+            _ => walk_stmt(self, stmt),
         }
     }
-
-    imports
 }
 
 fn load_site_packages(input_dir: &Path) -> Result<Option<PathBuf>> {

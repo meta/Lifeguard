@@ -60,7 +60,7 @@ If you already cloned without `--recurse-submodules`, run `git submodule update 
 
 ## Quick Start
 
-The fastest way to try Lifeguard is the `run-tree` subcommand, which discovers `.py` files under a directory and follows resolvable top-level imports. File and directory names below the input root must be ASCII Python identifiers; other paths are skipped.
+The fastest way to try Lifeguard is the `run-tree` subcommand, which discovers `.py` files under a directory and follows resolvable imports. File and directory names below the input root must be ASCII Python identifiers; other paths are skipped.
 
 ```bash
 cargo run -- run-tree <INPUT_DIR> <OUTPUT_PATH>
@@ -92,7 +92,7 @@ site_packages = "/path/to/site-packages"
 
 You can find out your site-packages path via `python -m site`. Both `gen-source-db` and `run-tree` read this section from `<INPUT_DIR>/pyproject.toml`. Relative `site_packages` paths are resolved against `INPUT_DIR`. You can override the setting with `--site-packages /path/to/site-packages`.
 
-**Note:** Discovery follows top-level import statements and may not discover all dependencies, such as imports nested in functions or conditional blocks outside the input tree. If Lifeguard reports missing modules, you may need to manually add entries to the generated source DB. For explicit lazy syntax, pass `--python-version 3.15` to both source discovery and analysis.
+**Note:** Discovery follows `import` statements at any nesting depth, including inside functions and conditional blocks, but not dynamic imports such as `importlib.import_module()`. If Lifeguard reports missing modules, you may need to manually add entries to the generated source DB. For explicit lazy syntax, pass `--python-version 3.15` to both source discovery and analysis.
 
 2. Run Lifeguard in one of two modes:
    - **Default**: Prints a high-level analysis of your codebase (% of compatible files, top errors, etc.) and writes the JSON output to `OUTPUT_PATH`.
