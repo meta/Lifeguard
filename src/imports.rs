@@ -763,14 +763,20 @@ impl<'a> ImportGraphBuilder<'a> {
                 let results: Vec<Result<(CollectedImports, Exports), ModuleName>> = frontier
                     .par_iter()
                     .filter_map(|name| {
-                        let ast_result = sources.parse(name)?;
-                        let module = match ast_result.as_parsed() {
-                            Ok(module) => module,
-                            Err(_) => return Some(Err(*name)),
-                        };
-                        let imports = self.collect_imports(*name, module);
-                        let exports = Exports::new_unfiltered(module, &self.config.sys_info);
-                        Some(Ok((imports, exports)))
+                        Some(
+                            topology_and_effects(sources, *name)?.map(|(topology, effects)| {
+                                let imports =
+                                    self.collect_module_imports(*name, &topology, effects.as_ref());
+                                let sys_info = &self.config.sys_info;
+                                let source_exports = Exports::new_unfiltered(&topology, sys_info);
+                                let Some(effects) = effects else {
+                                    return (imports, source_exports);
+                                };
+                                let mut exports = Exports::new_unfiltered(&effects, sys_info);
+                                exports.augment_source_bindings(source_exports);
+                                (imports, exports)
+                            }),
+                        )
                     })
                     .collect();
 

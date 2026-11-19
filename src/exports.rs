@@ -348,6 +348,40 @@ impl Exports {
             .insert(attr, (imported, range));
     }
 
+    /// Fill undeclared source bindings without redirecting stub-annotated callables.
+    pub(crate) fn augment_source_bindings(&mut self, source: Exports) {
+        for (name, kind) in source.exports {
+            if self
+                .get_re_export(&Attribute::from_module_name(&name))
+                .is_none()
+            {
+                self.exports.entry(name).or_insert(kind);
+            }
+        }
+        for (module, names) in source.re_exports {
+            for (name, imported) in names {
+                if !self.exports.contains_key(&module.append(&name)) {
+                    self.re_exports
+                        .entry(module)
+                        .or_default()
+                        .entry(name)
+                        .or_insert(imported);
+                }
+            }
+        }
+        for (module, names) in source.all {
+            self.all.entry(module).or_insert(names);
+        }
+        for (module, imports) in source.star_imports {
+            let stars = self.star_imports.entry(module).or_default();
+            let undeclared: Vec<StarImport> = imports
+                .into_iter()
+                .filter(|import| stars.iter().all(|star| star.source != import.source))
+                .collect();
+            stars.extend(undeclared);
+        }
+    }
+
     /// Merge `other` into `self`. Consume `other`.
     pub fn merge(&mut self, other: Exports) {
         self.exports.extend(other.exports);
@@ -805,10 +839,14 @@ mod tests {
     use pyrefly_python::module_name::ModuleName;
     use ruff_python_ast::name::Name;
 
+    use super::Attribute;
     use super::ExportsBuilder;
     use crate::imports::ImportGraph;
+    use crate::module_parser::parse_pyi_with_version;
     use crate::module_parser::parse_source;
     use crate::pyrefly::sys_info::SysInfo;
+    use crate::runner::default_python_version;
+    use crate::traits::ModuleNameExt;
     use crate::traits::SysInfoExt;
 
     fn get_dunder_all(code: &str) -> Option<Vec<Name>> {
@@ -822,6 +860,69 @@ mod tests {
 
     fn names(strs: &[&str]) -> Vec<Name> {
         strs.iter().map(Name::new).collect()
+    }
+
+    #[test]
+    fn source_bindings_do_not_redirect_explicit_stub_callables() {
+        let module = ModuleName::from_str("facade");
+        let sys_info = SysInfo::lg_default();
+        for (target, effect) in [
+            ("safe_target", "unsafe('facade')"),
+            ("unsafe_target", "no_effects()"),
+        ] {
+            let stub = parse_pyi_with_version(
+                &format!("class Result: ...\ndef call() -> Result: {effect}\n"),
+                module,
+                false,
+                default_python_version(),
+            );
+            let source = parse_source(
+                &format!("from {target} import call\nfrom other import added\n"),
+                module,
+                false,
+            );
+            let mut exports = ExportsBuilder::new_unfiltered(module, &sys_info).build(&stub);
+            exports.augment_source_bindings(
+                ExportsBuilder::new_unfiltered(module, &sys_info).build(&source),
+            );
+            assert!(exports.is_function(&module.append_str("call")));
+            assert!(
+                exports
+                    .get_re_export(&Attribute::new(module, "call"))
+                    .is_none()
+            );
+            assert_eq!(
+                exports.get_return_type(&module.append_str("call")),
+                Some(module.append_str("Result"))
+            );
+            assert!(
+                exports
+                    .get_re_export(&Attribute::new(module, "added"))
+                    .is_some()
+            );
+        }
+    }
+
+    #[test]
+    fn source_star_imports_the_stub_lacks_are_kept() {
+        let module = ModuleName::from_str("facade");
+        let sys_info = SysInfo::lg_default();
+        let stub =
+            parse_pyi_with_version("from a import *\n", module, false, default_python_version());
+        let source = parse_source("from a import *\nfrom b import *\n", module, false);
+        let mut exports = ExportsBuilder::new_unfiltered(module, &sys_info).build(&stub);
+        exports.augment_source_bindings(
+            ExportsBuilder::new_unfiltered(module, &sys_info).build(&source),
+        );
+        let sources: Vec<&str> = exports.star_imports[&module]
+            .iter()
+            .map(|star| star.source.as_str())
+            .collect();
+        assert_eq!(
+            sources,
+            vec!["a", "b"],
+            "`b` provides names only the source star-imports"
+        );
     }
 
     #[test]
