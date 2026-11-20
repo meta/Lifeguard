@@ -395,6 +395,28 @@ fn explain_differences(
     );
 }
 
+/// Fails when source DB files don't exist under `root_dir`: both paths would
+/// treat them as missing modules and still agree.
+fn check_sources_resolve(src_map: &SourceMap, root_dir: &Path) -> Result<()> {
+    let missing: Vec<&Path> = src_map
+        .modules
+        .values()
+        .chain(src_map.companion_stubs.values())
+        .map(PathBuf::as_path)
+        .filter(|path| !root_dir.join(path).is_file())
+        .sorted()
+        .collect();
+    if let Some(example) = missing.first() {
+        anyhow::bail!(
+            "{} source DB files don't exist under --root-dir {} (e.g. {}); pass the root the DB's paths are relative to",
+            missing.len(),
+            root_dir.display(),
+            example.display(),
+        );
+    }
+    Ok(())
+}
+
 pub fn run(args: ComparePathsArgs) -> Result<()> {
     let root_dir = match &args.root_dir {
         Some(dir) => dir.clone(),
@@ -412,6 +434,7 @@ pub fn run(args: ComparePathsArgs) -> Result<()> {
 
     let compute_errors = args.explain.is_some();
     let src_map = source_map::load_source_map(&args.db_path)?;
+    check_sources_resolve(&src_map, &root_dir)?;
     check_main_module(options.main_module, |name| {
         src_map.modules.contains_key(&name)
     })?;
@@ -677,6 +700,34 @@ mod tests {
         assert!(
             !errors.contains_key(&caller),
             "verified cross-library call should not remain in compare-path errors",
+        );
+    }
+
+    #[test]
+    fn sources_must_resolve_under_the_root_dir() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let project = dir.path().join("project");
+        std::fs::create_dir_all(project.join("pkg")).expect("create pkg");
+        std::fs::write(project.join("pkg/mod.py"), "X = 1\n").expect("write module");
+        let db = dir.path().join("db.json");
+        std::fs::write(
+            &db,
+            serde_json::json!({"pkg/mod.py": "pkg/mod.py"}).to_string(),
+        )
+        .expect("write db");
+        let src_map = source_map::load_source_map(&db).expect("load db");
+
+        assert!(
+            check_sources_resolve(&src_map, &project).is_ok(),
+            "the project root resolves every source",
+        );
+
+        // Both paths would drop the unreadable module and still agree
+        let err = check_sources_resolve(&src_map, dir.path())
+            .expect_err("a root the DB doesn't resolve under must fail");
+        assert!(
+            err.to_string().contains("pkg/mod.py"),
+            "the error should name a missing file, got: {err}",
         );
     }
 }
