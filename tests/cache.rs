@@ -313,7 +313,7 @@ mod tests {
     #[cfg(target_pointer_width = "64")]
     fn test_cached_struct_sizes() {
         // Wire fields only: the reduce-side accumulators live on `ReduceWorkspace`.
-        assert_eq!(std::mem::size_of::<LibraryCache>(), 168);
+        assert_eq!(std::mem::size_of::<LibraryCache>(), 192);
         assert_eq!(
             std::mem::size_of::<lifeguard::cache::ConstructorCallees>(),
             40,
@@ -410,6 +410,7 @@ mod tests {
                 inherited(mn("package.Base.__init__")),
             )],
             class_properties: vec![(mn("package.Derived"), vec!["prop".to_owned()])],
+            package_definitions: vec![mn("package.driver")],
             ..Default::default()
         };
 
@@ -436,6 +437,7 @@ mod tests {
             loaded.class_properties,
             vec![(mn("package.Derived"), vec!["prop".to_owned()])],
         );
+        assert_eq!(loaded.package_definitions, vec![mn("package.driver")]);
     }
 
     #[test]

@@ -74,6 +74,7 @@ struct WireHeader {
     /// stay out of the name table entirely.
     constructor_callees: Vec<(NameId, Option<NameId>, u8, Vec<NameId>)>,
     class_properties: Vec<(NameId, Vec<String>)>,
+    package_definitions: Vec<NameId>,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -199,6 +200,7 @@ impl NameTable {
             unique.insert(return_type.function);
             unique.insert(return_type.class);
         }
+        unique.extend(cache.package_definitions.iter().copied());
         for (class, bases) in &cache.class_bases {
             unique.insert(*class);
             unique.extend(bases.iter().copied());
@@ -389,6 +391,14 @@ pub(crate) fn write(cache: &LibraryCache, path: &Path) -> Result<()> {
         .collect();
     class_properties.sort_unstable();
 
+    let mut package_definitions: Vec<NameId> = cache
+        .package_definitions
+        .iter()
+        .map(|name| table.id(*name))
+        .collect();
+    package_definitions.sort_unstable();
+    package_definitions.dedup();
+
     let header = WireHeader {
         names: table.names,
         exports,
@@ -397,6 +407,7 @@ pub(crate) fn write(cache: &LibraryCache, path: &Path) -> Result<()> {
         class_metaclasses,
         constructor_callees,
         class_properties,
+        package_definitions,
     };
     let header_bytes = postcard::to_allocvec(&header)?;
 
@@ -512,6 +523,11 @@ pub(crate) fn read(path: &Path) -> Result<LibraryCache> {
         .into_iter()
         .map(|(class, properties)| Ok((decode_name(&header.names, class)?, properties)))
         .collect::<Result<_>>()?;
+    let package_definitions = header
+        .package_definitions
+        .into_iter()
+        .map(|name| decode_name(&header.names, name))
+        .collect::<Result<_>>()?;
     Ok(LibraryCache {
         modules,
         exports,
@@ -519,6 +535,7 @@ pub(crate) fn read(path: &Path) -> Result<LibraryCache> {
         class_metaclasses,
         class_properties,
         constructor_callees,
+        package_definitions,
         ..Default::default()
     })
 }

@@ -156,6 +156,7 @@ impl LibraryCache {
             fold_constructor_callees(&mut merged.constructor_callees, dep.constructor_callees);
             self.class_properties.extend(dep.class_properties);
             self.exports.return_types.extend(dep.exports.return_types);
+            self.package_definitions.extend(dep.package_definitions);
         }
 
         // `sort_and_dedup` below keeps one record per exported `(module, attr)`.

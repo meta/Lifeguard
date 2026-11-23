@@ -80,6 +80,7 @@ struct ResolvedProgram<'a> {
     classified: ClassifiedModules,
     import_graph: ImportGraph,
     re_exports: ReExports<'a>,
+    package_definitions: &'a [ModuleName],
     side_effects: SideEffects<'a>,
 }
 
@@ -96,6 +97,7 @@ impl<'a> ResolvedProgram<'a> {
             classified,
             import_graph,
             re_exports: ReExports::Whole(exports),
+            package_definitions: exports.package_definitions(),
             side_effects: SideEffects::Whole(side_effect_imports),
         }
     }
@@ -109,6 +111,7 @@ impl<'a> ResolvedProgram<'a> {
             classified,
             import_graph,
             re_exports: ReExports::Cached(cache.re_exports()),
+            package_definitions: cache.package_definitions(),
             side_effects: SideEffects::Cached(cache.modules()),
         }
     }
@@ -576,6 +579,7 @@ impl LifeGuardAnalysis {
             classified,
             import_graph,
             re_exports,
+            package_definitions,
             side_effects,
         } = program;
         let enters_chroot = classified.enters_chroot;
@@ -640,7 +644,7 @@ impl LifeGuardAnalysis {
             SideEffects::Cached(modules) => analysis.propagate_cached_side_effect_imports(modules),
         }
         // After side-effect propagation, which can add a key back.
-        for module in shadowed_submodules(re_exports, &import_graph) {
+        for module in shadowed_submodules(re_exports, package_definitions, &import_graph) {
             analysis.output.lazy_eligible.remove(&module);
         }
         if enters_chroot {
@@ -709,9 +713,14 @@ impl LifeGuardAnalysis {
     }
 }
 
-/// Submodules their own package rebinds, as `from .driver import driver` does: a deferred
-/// `import pkg.driver` binds the submodule over that attribute, so these never defer.
-fn shadowed_submodules(re_exports: ReExports, import_graph: &ImportGraph) -> AHashSet<ModuleName> {
+/// Submodules their own package rebinds, as `from .driver import driver` or `driver = ...`
+/// do: a deferred `import pkg.driver` binds the submodule over that attribute, so these
+/// never defer.
+fn shadowed_submodules(
+    re_exports: ReExports,
+    package_definitions: &[ModuleName],
+    import_graph: &ImportGraph,
+) -> AHashSet<ModuleName> {
     // Keyed by (package, name) so re-exports probe without interning `package.name`.
     let submodules: AHashMap<(ModuleName, &str), ModuleName> = import_graph
         .modules_par_iter()
@@ -721,7 +730,7 @@ fn shadowed_submodules(re_exports: ReExports, import_graph: &ImportGraph) -> AHa
         })
         .collect();
     let submodule = |module: ModuleName, attr: &str| submodules.get(&(module, attr)).copied();
-    match re_exports {
+    let mut shadowed: AHashSet<ModuleName> = match re_exports {
         ReExports::Whole(exports) => exports
             .par_re_exports()
             .filter_map(|(module, attr, _)| submodule(module, attr))
@@ -730,7 +739,13 @@ fn shadowed_submodules(re_exports: ReExports, import_graph: &ImportGraph) -> AHa
             .par_iter()
             .filter_map(|r| submodule(r.exported_module, &r.exported_attr))
             .collect(),
-    }
+    };
+    shadowed.extend(
+        package_definitions
+            .iter()
+            .filter(|name| import_graph.contains(name)),
+    );
+    shadowed
 }
 
 /// Collect import cycles as lists of module names, filtered to source modules only.

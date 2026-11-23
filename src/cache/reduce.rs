@@ -239,6 +239,10 @@ impl ResolvedCache {
         &self.cache.exports.re_exports
     }
 
+    pub(crate) fn package_definitions(&self) -> &[ModuleName] {
+        &self.cache.package_definitions
+    }
+
     pub(crate) fn build_import_graph(&self) -> ImportGraph {
         self.cache.to_import_graph()
     }

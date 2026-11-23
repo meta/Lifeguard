@@ -56,6 +56,7 @@ use crate::source_map::bundled_stub_sources;
 use crate::stubs::Stubs;
 use crate::traits::AsStr;
 use crate::traits::ModuleExt;
+use crate::traits::ModuleNameExt;
 
 // ---------------------------------------------------------------------------
 // Shared stub state
@@ -188,6 +189,8 @@ pub struct TestSources {
     companion_stubs: HashMap<ModuleName, String, ahash::RandomState>,
     parse_errors: AHashSet<ModuleName>,
     names: Vec<ModuleName>,
+    /// Modules parsed as an `__init__.py`: every ancestor of a module name.
+    packages: AHashSet<ModuleName>,
     python_version: PythonVersion,
 }
 
@@ -227,10 +230,23 @@ impl TestSources {
             companion_stubs: HashMap::default(),
             parse_errors: AHashSet::new(),
             names,
+            packages: AHashSet::new(),
             python_version,
         };
-        sources.names.extend(sources.referenced_stubs());
+        sources.add_packages_of(sources.names.clone());
+        let stubs = sources.referenced_stubs();
+        sources.add_packages_of(stubs.iter().copied());
+        sources.names.extend(stubs);
         sources
+    }
+
+    /// A shard still parses `pkg/__init__.py` as a package when `pkg`'s submodules sit in
+    /// another shard, as a real path would.
+    fn add_packages_of(&mut self, names: impl IntoIterator<Item = ModuleName>) {
+        for name in names {
+            self.packages
+                .extend(name.iter_parents().map(|(parent, _)| parent));
+        }
     }
 
     /// The stubs the test modules can reach. Resolved by graphing the test
@@ -304,12 +320,7 @@ impl ModuleProvider for TestSources {
                     self.python_version,
                 )));
             }
-            // A module is an __init__.py (package) if any other module is a child of it
-            let name_prefix = format!("{}.", name.as_str());
-            let is_init = self
-                .names
-                .iter()
-                .any(|n| n.as_str().starts_with(&name_prefix));
+            let is_init = self.packages.contains(name);
             let mut parsed = parse_source_with_version(code, *name, is_init, self.python_version);
             parsed.companion_stub_names = self
                 .companion_stubs
@@ -1184,7 +1195,13 @@ impl<'a> ParityFixture<'a> {
             .filter(|stub| group.iter().any(|(name, _)| name == *stub))
             .copied()
             .collect();
-        TestSources::new_with_stubs(group, &stubs)
+        let mut sources = TestSources::new_with_stubs(group, &stubs);
+        sources.add_packages_of(
+            self.modules
+                .iter()
+                .map(|(name, _)| ModuleName::from_str(name)),
+        );
+        sources
     }
 
     fn shards(&self, shards: Shards) -> Vec<TestSources> {

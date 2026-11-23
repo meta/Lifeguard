@@ -291,6 +291,21 @@ mod tests {
     }
 
     #[test]
+    fn submodule_shadowed_by_a_package_definition_agrees() {
+        let pkg = r#"
+            try:
+                from pkg.driver import driver
+            except ImportError:
+                driver = None
+        "#;
+        assert_paths_agree_sharded(&[
+            ("pkg", pkg),
+            ("pkg.driver", "driver = 1"),
+            ("app", "import pkg.driver as drv"),
+        ]);
+    }
+
+    #[test]
     fn parent_fallback_shadowing_agrees() {
         // `pkg.sub` is a real module, so `import pkg.sub` must resolve exactly.
         // A shard holding `pkg` but not `pkg.sub` can only resolve the import to

@@ -93,6 +93,9 @@ pub struct LibraryCache {
     /// resolved by the map phase.
     #[serde(default)]
     pub constructor_callees: Vec<(ModuleName, ConstructorCallees)>,
+    /// Names the library's source packages bind by definition; see `Exports`.
+    #[serde(default)]
+    pub package_definitions: Vec<ModuleName>,
 }
 
 /// The methods an instantiation can dispatch to. The same set applies to the
@@ -408,6 +411,12 @@ impl LibraryCache {
         });
 
         let own_modules: AHashSet<ModuleName> = modules.iter().map(|m| m.name).collect();
+        let package_definitions = exports
+            .package_definitions()
+            .iter()
+            .filter(|name| name.parent().is_some_and(|p| own_modules.contains(&p)))
+            .copied()
+            .collect();
         let exports = time("  Building cached exports", || {
             CachedExports::from_exports(exports, &own_modules, import_graph)
         });
@@ -415,6 +424,7 @@ impl LibraryCache {
         LibraryCache {
             modules,
             exports,
+            package_definitions,
             ..Default::default()
         }
     }

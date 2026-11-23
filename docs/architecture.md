@@ -202,6 +202,6 @@ The analyzer produces a `LifeGuardOutput` with two main components:
 
 **Key distinction**: To mark a third-party module as unsafe for lazy imports, it should appear in the `lazy_eligible` dict values (as a failing dependency), NOT in the `load_imports_eagerly` set.
 
-**Submodules a package shadows**: A submodule whose package re-exports a same-named binding (`from .driver import driver` in `pkg/__init__.py`) never enters `lazy_eligible`. A deferred `import pkg.driver` would bind the lazy submodule over the package's attribute; the re-export has already loaded the submodule, so importing it eagerly costs nothing. A `def`, class or assignment shadowing a submodule is not caught: the incremental path does not cache definitions.
+**Submodules a package shadows**: A submodule whose package re-exports or defines a same-named binding (`from .driver import driver` or `driver = ...` in `pkg/__init__.py`) never enters `lazy_eligible`. A deferred `import pkg.driver` would bind the lazy submodule over the package's attribute. A star import from another library is not expanded on the incremental path, so a shadow it creates is missed there.
 
 **Import cycle handling**: Import cycles are detected and handled — modules in import cycles have all cycle members added to their `lazy_eligible` set. When modules outside a cycle can enter it through more than one member, each of them is also guarded by the member it enters through, so deferring it cannot change which member of the cycle runs first.

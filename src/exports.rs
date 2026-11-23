@@ -190,6 +190,8 @@ pub struct Exports {
     /// handler. Consumed by `expand_star_re_exports` once all per-module exports
     /// are merged.
     star_imports: AHashMap<ModuleName, Vec<StarImport>>,
+    /// Names a source package's `__init__` binds by definition, not import, fully qualified.
+    package_definitions: Vec<ModuleName>,
 }
 
 impl Exports {
@@ -200,6 +202,7 @@ impl Exports {
             all: AHashMap::new(),
             return_types: AHashMap::new(),
             star_imports: AHashMap::new(),
+            package_definitions: Vec::new(),
         }
     }
 
@@ -218,6 +221,7 @@ impl Exports {
             all: AHashMap::with_capacity(all),
             return_types: AHashMap::with_capacity(return_types),
             star_imports: AHashMap::with_capacity(star_imports),
+            package_definitions: Vec::new(),
         }
     }
 
@@ -335,6 +339,10 @@ impl Exports {
         self.get_re_export(name).is_some()
     }
 
+    pub fn package_definitions(&self) -> &[ModuleName] {
+        &self.package_definitions
+    }
+
     fn insert_re_export_entry(
         &mut self,
         module: ModuleName,
@@ -389,6 +397,7 @@ impl Exports {
         self.all.extend(other.all);
         self.return_types.extend(other.return_types);
         self.star_imports.extend(other.star_imports);
+        self.package_definitions.extend(other.package_definitions);
     }
 
     /// Merge a collection of per-module Exports into a single Exports.
@@ -610,7 +619,14 @@ impl<'a> ExportsBuilder<'a> {
             &config,
         );
 
+        let is_source_package = parsed_module.is_init && !parsed_module.is_stub();
         for (name, def) in definitions.definitions.iter() {
+            if is_source_package
+                && let DefinitionStyle::Unannotated(_) | DefinitionStyle::Annotated(..) = def.style
+            {
+                let qualname = self.module_name.append(name);
+                self.inner.package_definitions.push(qualname);
+            }
             self.process_definition(name, def);
         }
 

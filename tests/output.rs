@@ -1188,6 +1188,33 @@ mod tests {
     }
 
     #[test]
+    fn test_submodule_shadowed_by_a_package_definition_never_defers() {
+        // A name bound twice keeps only its definition, so no re-export is recorded.
+        let packages = [
+            "try:\n    from pkg.driver import driver\nexcept ImportError:\n    driver = None",
+            "import pkg.driver\ndriver: int = 1",
+        ];
+        for pkg in packages {
+            let modules = vec![
+                ("pkg", pkg),
+                ("pkg.driver", "driver = 1"),
+                ("user", "import pkg.driver as drv"),
+            ];
+
+            let result = run_lifeguard_analysis(&modules);
+
+            assert!(
+                result
+                    .output
+                    .lazy_eligible
+                    .get(&ModuleName::from_str("pkg.driver"))
+                    .is_none(),
+                "pkg.driver must always load eagerly under: {pkg}"
+            );
+        }
+    }
+
+    #[test]
     fn test_submodule_bound_by_its_package_stays_lazy() {
         let modules = vec![
             ("pkg", "from pkg import driver"),
