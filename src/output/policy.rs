@@ -15,7 +15,6 @@ use itertools::Itertools;
 use petgraph::Direction;
 use pyrefly_python::module_name::ModuleName;
 use rayon::prelude::*;
-use ruff_python_ast::name::Name;
 use starlark_map::small_set::SmallSet;
 
 use crate::cache::CachedModule;
@@ -713,17 +712,22 @@ impl LifeGuardAnalysis {
 /// Submodules their own package rebinds, as `from .driver import driver` does: a deferred
 /// `import pkg.driver` binds the submodule over that attribute, so these never defer.
 fn shadowed_submodules(re_exports: ReExports, import_graph: &ImportGraph) -> AHashSet<ModuleName> {
-    let submodule = |module: ModuleName, attr: &Name| {
-        let sub = module.append(attr);
-        import_graph.contains(&sub).then_some(sub)
-    };
+    // Keyed by (package, name) so re-exports probe without interning `package.name`.
+    let submodules: AHashMap<(ModuleName, &str), ModuleName> = import_graph
+        .modules_par_iter()
+        .filter_map(|module| {
+            let (package, attr) = module.as_str().rsplit_once('.')?;
+            Some(((ModuleName::from_str(package), attr), *module))
+        })
+        .collect();
+    let submodule = |module: ModuleName, attr: &str| submodules.get(&(module, attr)).copied();
     match re_exports {
         ReExports::Whole(exports) => exports
-            .get_re_exports()
+            .par_re_exports()
             .filter_map(|(module, attr, _)| submodule(module, attr))
             .collect(),
         ReExports::Cached(re_exports) => re_exports
-            .iter()
+            .par_iter()
             .filter_map(|r| submodule(r.exported_module, &r.exported_attr))
             .collect(),
     }
