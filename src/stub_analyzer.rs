@@ -87,7 +87,7 @@ impl<'a> StubAnalyzer<'a> {
 
     fn get_call_effect(&self, call: &ExprCall) -> Option<Effect> {
         // Try to parse a function call `f("arg")` into effect `f` with name `arg`
-        let box func = &call.func;
+        let func = &call.func;
         let name = func.as_var_name()?;
         let eff_name = name.as_str().replace("_", "-");
         let kind = EffectKind::from_str(&eff_name).ok()?;

@@ -1140,7 +1140,7 @@ impl<'a> SourceAnalyzer<'a> {
     }
 
     fn check_call(&self, call: &ExprCall, output: &mut ModuleEffects) {
-        let box func = &call.func;
+        let func = &call.func;
         self.check_subclasses_access(func, output);
         if !self.check_call_for_import(call, output) {
             self.check_unpacked_call(func, Some(&call.arguments), call.range(), output);
@@ -1260,7 +1260,7 @@ impl<'a> SourceAnalyzer<'a> {
     }
 
     fn check_attr(&self, e: &ExprAttribute, output: &mut ModuleEffects) {
-        let box obj = &e.value;
+        let obj = &e.value;
         self.check_attr_impl(obj, &e.attr, &e.ctx, output);
     }
 
@@ -1364,7 +1364,7 @@ impl<'a> SourceAnalyzer<'a> {
             return;
         };
 
-        let box obj = &e.value;
+        let obj = &e.value;
 
         let Some(res) = self.info.resolve(&self.cursor, obj) else {
             return;
