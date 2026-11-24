@@ -153,7 +153,7 @@ it means carrying guard-derived edges in the cache for the reduce to drop.
 - `tracing.rs` - Simple timing utility
 - `debug.rs` - Dump helper for the module imports map, and memory reporting
 - `traits.rs` - Extension traits bridging lifeguard with pyrefly types
-- `find_sources.rs` - Seeds from `.py` files under a directory and follows imports (optionally into site-packages); shared by `run-tree` and `gen-source-db`
+- `find_sources.rs` - Seeds from `.py` files under a directory and follows imports, plus each imported module's parent package `__init__.py` (optionally into site-packages); shared by `run-tree` and `gen-source-db`
 
 **Subcommands** (`src/main.rs` dispatches these; `analyze` is the default):
 - `commands/analyze.rs` - Whole-program analysis of a source DB
