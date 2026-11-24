@@ -77,6 +77,25 @@ fn resolve_module(root: &Path, parts: &[&str]) -> Option<PathBuf> {
     None
 }
 
+/// The `__init__.py` of every package above `file` within `root`, outermost first: Python
+/// runs each of them before the module itself.
+fn parent_package_inits(root: &Path, file: &Path) -> Vec<PathBuf> {
+    let package_dir = if file.file_name().is_some_and(|name| name == "__init__.py") {
+        file.parent().and_then(Path::parent)
+    } else {
+        file.parent()
+    };
+    let mut inits: Vec<PathBuf> = package_dir
+        .into_iter()
+        .flat_map(Path::ancestors)
+        .take_while(|dir| *dir != root && dir.starts_with(root))
+        .map(|dir| dir.join("__init__.py"))
+        .filter(|init| init.is_file())
+        .collect();
+    inits.reverse();
+    inits
+}
+
 /// Try to resolve a dotted module name against multiple roots.
 /// Also tries progressively shorter prefixes (for `from foo.bar import baz`
 /// where baz is a name inside foo/bar.py, not a submodule).
@@ -322,28 +341,34 @@ pub fn build_source_db(
             .and_then(package_from_rel_path);
         let imports = extract_imports(&source, package.as_deref(), python_version);
         for module_name in imports {
-            if let Some(resolved) = resolve_import(&roots, &module_name) {
-                let resolved = match resolved.canonicalize() {
-                    Ok(p) => p,
-                    Err(_) => continue,
-                };
-                if visited.insert(resolved.clone()) {
-                    // Determine the relative key based on which root it's under.
-                    // Check most-specific root first (site_packages may be a
-                    // subdirectory of input_dir).
-                    let rel_key = roots
-                        .iter()
-                        .rev()
-                        .find_map(|root| resolved.strip_prefix(root).ok());
-                    let Some(rel_key) = rel_key else {
-                        continue;
-                    };
-                    build_map.insert(
-                        build_source_db_key(rel_key),
-                        resolved.to_string_lossy().into_owned(),
-                    );
-                    queue.push_back(resolved);
+            let Some(resolved) = resolve_import(&roots, &module_name) else {
+                continue;
+            };
+            let Ok(resolved) = resolved.canonicalize() else {
+                continue;
+            };
+            // A visited file's parent packages were queued with it (or seeded by the walk).
+            if visited.contains(&resolved) {
+                continue;
+            }
+            // Most-specific root first: site_packages may be a subdirectory of input_dir.
+            let Some(root) = roots.iter().rev().find(|root| resolved.starts_with(root)) else {
+                continue;
+            };
+            let mut found = parent_package_inits(root, &resolved);
+            found.push(resolved);
+            for path in found {
+                if !visited.insert(path.clone()) {
+                    continue;
                 }
+                let rel_key = path
+                    .strip_prefix(root)
+                    .expect("should be under the root it was found in");
+                build_map.insert(
+                    build_source_db_key(rel_key),
+                    path.to_string_lossy().into_owned(),
+                );
+                queue.push_back(path);
             }
         }
     }

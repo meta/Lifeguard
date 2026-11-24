@@ -147,4 +147,73 @@ class C:
             BTreeSet::from(["main.py", "pkg/__init__.py", "pkg/helper.py"]),
         );
     }
+
+    /// Importing a submodule runs every parent package's `__init__` first, so those files and
+    /// what they import belong in the build map even when only the submodule is named.
+    #[test]
+    fn test_follows_parent_packages_of_an_imported_submodule() {
+        let tmp = populate_temp_dir(&[
+            ("proj/main.py", "import pkg\n"),
+            ("sp/pkg/__init__.py", "from .ctx import Ctx\nctx = Ctx()\n"),
+            (
+                "sp/pkg/ctx.py",
+                "from .functions.functions import Special\n",
+            ),
+            (
+                "sp/pkg/functions/__init__.py",
+                "from . import functions\nfrom . import zetazeros\n",
+            ),
+            (
+                "sp/pkg/functions/functions.py",
+                "class Special:\n    defined = {}\n",
+            ),
+            (
+                "sp/pkg/functions/zetazeros.py",
+                "from .functions import Special\n",
+            ),
+        ]);
+        let proj = tmp.path().join("proj");
+        let sp = tmp.path().join("sp");
+
+        let (build_map, _) = build_source_db(&proj, Some(&sp), default_python_version()).unwrap();
+        assert_eq!(
+            keys(&build_map),
+            BTreeSet::from([
+                "main.py",
+                "pkg/__init__.py",
+                "pkg/ctx.py",
+                "pkg/functions/__init__.py",
+                "pkg/functions/functions.py",
+                "pkg/functions/zetazeros.py",
+            ]),
+        );
+    }
+
+    /// An absolute import of a deep submodule pulls in each ancestor `__init__` too.
+    #[test]
+    fn test_follows_ancestor_packages_of_an_absolute_import() {
+        let tmp = populate_temp_dir(&[
+            ("proj/main.py", "import a.b.c\n"),
+            ("sp/a/__init__.py", "import side_a\n"),
+            ("sp/a/b/__init__.py", ""),
+            ("sp/a/b/c.py", ""),
+            ("sp/side_a.py", ""),
+            // A namespace package level has no `__init__` to add.
+            ("sp/ns/inner/mod.py", ""),
+        ]);
+        let proj = tmp.path().join("proj");
+        let sp = tmp.path().join("sp");
+
+        let (build_map, _) = build_source_db(&proj, Some(&sp), default_python_version()).unwrap();
+        assert_eq!(
+            keys(&build_map),
+            BTreeSet::from([
+                "main.py",
+                "a/__init__.py",
+                "a/b/__init__.py",
+                "a/b/c.py",
+                "side_a.py",
+            ]),
+        );
+    }
 }
