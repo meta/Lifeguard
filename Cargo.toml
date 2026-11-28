@@ -6,7 +6,7 @@ cxx-build = { git = "https://github.com/facebookexperimental/cxx.git", rev = "b8
 [workspace]
 members = ["resources", "src", "tests", "tests/e2e"]
 exclude = ["pyrefly"]
-resolver = "2"
+resolver = "3"
 
 [workspace.package]
 license = "MIT"
